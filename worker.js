@@ -1,7 +1,7 @@
 /**
  * Cloudflare Worker for a Telegram Temporary Email Bot
  * Author: Gemini (with user-requested features)
- * Version: 4.0 (User Stats & Email Forwarding)
+ * Version: 4.1 (State Management Fix)
  * Language: Burmese (Comments) & English (Code)
  * Features: Interactive menu, Paginated inbox, User stats, Email forwarding setup, Admin panel, Broadcast, Email management.
  * Database: Cloudflare KV
@@ -73,10 +73,8 @@ export default {
     let { inbox, owner } = JSON.parse(emailDataJSON);
     inbox.unshift(newEmail);
 
-    // Save the new email to the inbox
     await env.MAIL_BOT_DB.put(emailKey, JSON.stringify({ inbox, owner }));
 
-    // Notify the user in Telegram
     await sendMessage(
       owner,
       `📬 **Email အသစ်ရောက်ရှိ!**\n\nသင်၏လိပ်စာ \`${to}\` သို့ email အသစ်တစ်စောင် ရောက်ရှိနေပါသည်။ \n\n"📧 ကျွန်ုပ်၏ Email များ" ခလုတ်မှတစ်ဆင့် စစ်ဆေးနိုင်ပါသည်။`,
@@ -84,7 +82,6 @@ export default {
       env
     );
       
-    // --- NEW: Handle Email Forwarding ---
     const userData = await getUserData(owner, env);
     if (userData && userData.forwardEmail) {
         await forwardEmailWithThirdParty(userData.forwardEmail, newEmail, env);
@@ -121,7 +118,6 @@ async function editMessage(chatId, messageId, text, reply_markup = null, env) {
 async function getUserData(chatId, env) {
     const userKey = `user:${chatId}`;
     const data = await env.MAIL_BOT_DB.get(userKey);
-    // NEW: Add forwardEmail to the default object
     return data ? JSON.parse(data) : { createdEmails: [], lastActive: null, state: null, forwardEmail: null };
 }
 
@@ -143,25 +139,29 @@ async function handleMessage(message, env) {
     const userData = await getUserData(chatId, env);
 
     if (userData.state) {
+        let stateHandled = true;
         switch (userData.state) {
             case 'awaiting_email_name':
-                await createNewEmail(chatId, text.toLowerCase().split(" ")[0], env);
-                userData.state = null;
-                await updateUserData(chatId, userData, env);
-                return;
-            // NEW: Handle reply for setting forwarding email
+                // **FIX**: Pass userData to be modified directly.
+                await createNewEmail(chatId, text.toLowerCase().split(" ")[0], userData, env);
+                break;
             case 'awaiting_forward_email':
-                await setForwardEmail(chatId, message.message_id, text, env);
-                userData.state = null;
-                await updateUserData(chatId, userData, env);
-                return;
+                // **FIX**: Pass userData to be modified directly.
+                await setForwardEmail(chatId, text, userData, env);
+                break;
             case 'awaiting_broadcast_message':
                 if (isAdmin(chatId, env)) {
                     await confirmBroadcast(chatId, message.message_id, text, env);
-                    userData.state = null;
-                    await updateUserData(chatId, userData, env);
                 }
-                return;
+                break;
+            default:
+                stateHandled = false;
+        }
+        // If a state was handled, reset it and save the updated userData.
+        if (stateHandled) {
+            userData.state = null;
+            await updateUserData(chatId, userData, env);
+            return;
         }
     }
 
@@ -186,7 +186,6 @@ async function showMainMenu(chatId, env, messageId = null) {
             [{ text: "➕ Email အသစ်ဖန်တီးရန်", callback_data: "create_email" }],
             [{ text: "🎲 ကျပန်းလိပ်စာ ဖန်တီးရန်", callback_data: "random_address" }],
             [{ text: "📧 ကျွန်ုပ်၏ Email များ", callback_data: "my_emails" }],
-            // --- NEW BUTTONS ---
             [{ text: "⚙️ Forwarding တပ်ဆင်ရန်", callback_data: "setup_forwarding" }],
             [{ text: "📊 ကျွန်ုပ်၏ စာရင်းအင်း", callback_data: "user_stats" }],
         ]
@@ -217,27 +216,29 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
     await updateUserData(chatId, userData, env);
 
     switch (action) {
-        // --- Main Menu & Creation ---
         case "main_menu": await showMainMenu(chatId, env, messageId); break;
         case "create_email": await requestEmailName(chatId, env); break;
         case "my_emails": await listUserEmails(chatId, env, messageId); break;
         case "random_address": await generateRandomAddress(chatId, env, messageId); break;
+        case "create_random": 
+            // This is a special case where we modify the userData directly within the callback
+            await createNewEmail(chatId, params[0], userData, env);
+            await updateUserData(chatId, userData, env); // Save immediately
+            await editMessage(chatId, messageId, `✅ ကျပန်းလိပ်စာ \`${params[0]}@${env.DOMAIN}\` ကို အောင်မြင်စွာဖန်တီးပြီးပါပြီ။`, { inline_keyboard: [[{ text: "🔙 Menu သို့ပြန်သွားရန်", callback_data: "main_menu" }]] }, env);
+            break;
+        case "generate_another": await generateRandomAddress(chatId, env, messageId); break;
         
-        // --- Inbox and Email Viewing ---
         case "view_inbox": await viewInbox(chatId, messageId, params[0], parseInt(params[1] || 1), env); break;
         case "view_email": await viewSingleEmail(chatId, messageId, params[0], parseInt(params[1]), parseInt(params[2]), env); break;
         
-        // --- Email Deletion ---
         case "delete_email_prompt": await confirmDeleteEmail(chatId, messageId, params[0], env); break;
         case "delete_email_confirm": await deleteEmail(chatId, messageId, params[0], env); break;
 
-        // --- NEW: User Stats & Forwarding ---
         case "user_stats": await showUserStats(chatId, messageId, env); break;
         case "setup_forwarding": await showForwardingSetup(chatId, messageId, env); break;
         case "set_forward_email": await requestForwardEmail(chatId, messageId, env); break;
         case "remove_forward_email": await removeForwardEmail(chatId, messageId, env); break;
 
-        // --- Admin Panel ---
         case "admin_panel": case "admin_back": await showAdminPanel(chatId, env, messageId); break;
         case "admin_stats": await showAdminStats(chatId, messageId, env); break;
         case "admin_broadcast": await requestBroadcastMessage(chatId, messageId, env); break;
@@ -252,19 +253,59 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
     }
 }
 
-// --- All other functions (createEmail, listUserEmails, etc.) remain the same ---
-// ... (The code for creating, listing, viewing, and deleting emails is unchanged)
-// ... (The code for the Admin panel is also unchanged)
-// I will only add the NEW functions for the requested features below.
+// --- Email Creation and Forwarding (FIXED LOGIC) ---
 
-// --- NEW FEATURE: User Stats ---
+/**
+ * **FIXED**: Now accepts the userData object to modify it directly,
+ * preventing state overwrites. The calling function is responsible for saving.
+ */
+async function createNewEmail(chatId, name, userData, env) {
+    if (!/^[a-z0-9.-]+$/.test(name)) {
+        await sendMessage(chatId, "❌ **မှားယွင်းနေပါသည်!**\nနာမည်တွင် English အက္ခရာ အသေး (a-z)၊ ဂဏန်း (0-9)၊ နှင့် `.` `-` တို့သာ ပါဝင်ရပါမည်။ Space မပါရပါ။\n\nခလုတ်ကိုနှိပ်ပြီး ထပ်ကြိုးစားပါ။", { inline_keyboard: [[{ text: '➕ ထပ်ကြိုးစားမည်', callback_data: 'create_email' }]] }, env);
+        return;
+    }
+    const email = `${name.toLowerCase()}@${env.DOMAIN}`;
+    const emailKey = `email:${email}`;
+    const existingEmail = await env.MAIL_BOT_DB.get(emailKey);
+    if (existingEmail) {
+        await sendMessage(chatId, `😥 **လိပ်စာအသုံးပြုပြီးသားပါ။**\n\`${email}\` သည် အခြားသူတစ်ယောက် အသုံးပြုနေပါသည်။ နာမည်အသစ်တစ်ခု ထပ်ကြိုးစားပါ။`, { inline_keyboard: [[{ text: '➕ ထပ်ကြိုးစားမည်', callback_data: 'create_email' }]] }, env);
+        return;
+    }
+    
+    await env.MAIL_BOT_DB.put(emailKey, JSON.stringify({ inbox: [], owner: chatId }));
+    
+    // Modify the passed-in userData object
+    if (!userData.createdEmails.includes(email)) {
+        userData.createdEmails.push(email);
+    }
+    
+    await sendMessage(chatId, `✅ **အောင်မြင်ပါသည်!**\nသင်၏ email လိပ်စာအသစ်မှာ:\n\n\`${email}\`\n\n"📧 ကျွန်ုပ်၏ Email များ" ကိုနှိပ်ပြီး စီမံခန့်ခွဲနိုင်ပါသည်။`, { inline_keyboard: [[{ text: "🔙 Menu သို့ပြန်သွားရန်", callback_data: "main_menu" }]] }, env);
+}
+
+/**
+ * **FIXED**: Now accepts the userData object to modify it directly.
+ */
+async function setForwardEmail(chatId, email, userData, env) {
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+        await sendMessage(chatId, `❌ **Email ပုံစံမမှန်ပါ။** \`${email}\` သည် မှန်ကန်သော email address မဟုတ်ပါ။ ထပ်ကြိုးစားပါ။`, { inline_keyboard: [[{ text: '➕ ထပ်ကြိုးစားမည်', callback_data: 'set_forward_email' }]] }, env);
+        return;
+    }
+
+    // Modify the passed-in userData object
+    userData.forwardEmail = email;
+
+    await sendMessage(chatId, `✅ **အောင်မြင်ပါသည်။**\n\nယခုမှစ၍ email အသစ်များဝင်လာပါက \`${email}\` သို့ forward လုပ်ပေးပါမည်။`, { inline_keyboard: [[{ text: '🔙 Menu သို့ပြန်သွားရန်', callback_data: 'main_menu' }]] }, env);
+}
+
+
+// --- UNCHANGED AND OTHER FUNCTIONS ---
 
 async function showUserStats(chatId, messageId, env) {
     const userData = await getUserData(chatId, env);
     const emailCount = userData.createdEmails.length;
     let totalMessages = 0;
 
-    // To get the total message count, we need to read each email's data
     for (const emailAddress of userData.createdEmails) {
         const emailKey = `email:${emailAddress}`;
         const emailDataJSON = await env.MAIL_BOT_DB.get(emailKey);
@@ -281,8 +322,6 @@ async function showUserStats(chatId, messageId, env) {
     const keyboard = { inline_keyboard: [[{ text: "🔙 Menu သို့ပြန်သွားရန်", callback_data: "main_menu" }]] };
     await editMessage(chatId, messageId, text, keyboard, env);
 }
-
-// --- NEW FEATURE: Email Forwarding ---
 
 async function showForwardingSetup(chatId, messageId, env) {
     const userData = await getUserData(chatId, env);
@@ -313,64 +352,31 @@ async function requestForwardEmail(chatId, messageId, env) {
     await editMessage(chatId, messageId, text, { inline_keyboard: [[{ text: "🔙 Forwarding Setup သို့ပြန်သွားရန်", callback_data: "setup_forwarding" }]] }, env);
 }
 
-async function setForwardEmail(chatId, messageId, email, env) {
-    // Basic email validation regex
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(email)) {
-        await sendMessage(chatId, `❌ **Email ပုံစံမမှန်ပါ။** \`${email}\` သည် မှန်ကန်သော email address မဟုတ်ပါ။ ထပ်ကြိုးစားပါ။`, { inline_keyboard: [[{ text: '➕ ထပ်ကြိုးစားမည်', callback_data: 'set_forward_email' }]] }, env);
-        return;
-    }
-
-    const userData = await getUserData(chatId, env);
-    userData.forwardEmail = email;
-    await updateUserData(chatId, userData, env);
-
-    await sendMessage(chatId, `✅ **အောင်မြင်ပါသည်။**\n\nယခုမှစ၍ email အသစ်များဝင်လာပါက \`${email}\` သို့ forward လုပ်ပေးပါမည်။`, { inline_keyboard: [[{ text: '🔙 Menu သို့ပြန်သွားရန်', callback_data: 'main_menu' }]] }, env);
-}
-
 async function removeForwardEmail(chatId, messageId, env) {
     const userData = await getUserData(chatId, env);
-    userData.forwardEmail = null; // Set to null to remove
+    userData.forwardEmail = null;
     await updateUserData(chatId, userData, env);
 
     const text = `✅ **Forwarding ကို ပယ်ဖျက်ပြီးပါပြီ။**\n\nယခုမှစ၍ email များကို forward လုပ်တော့မည်မဟုတ်ပါ။`;
     await editMessage(chatId, messageId, text, { inline_keyboard: [[{ text: '🔙 Menu သို့ပြန်သွားရန်', callback_data: 'main_menu' }]] }, env);
 }
 
-/**
- * Forwards an email using a third-party service like SendGrid.
- * @param {string} forwardTo - The user's real email address to forward to.
- * @param {object} emailContent - The email object containing from, subject, body.
- * @param {object} env - The environment object with API keys.
- */
 async function forwardEmailWithThirdParty(forwardTo, emailContent, env) {
     if (!env.SENDGRID_API_KEY || !env.FORWARD_FROM_EMAIL) {
         console.error("SendGrid API Key or From Email not configured. Skipping forward.");
         return;
     }
-
-    const forwardBody = `
-        <p>--- This is an automated forward from your Temp Mail Bot ---</p>
-        <p><b>Original Sender:</b> ${emailContent.from}</p>
-        <p><b>Original Subject:</b> ${emailContent.subject}</p>
-        <hr>
-        <div>${emailContent.body.replace(/\n/g, '<br>')}</div>
-    `;
-
+    const forwardBody = `<p>--- This is an automated forward from your Temp Mail Bot ---</p><p><b>Original Sender:</b> ${emailContent.from}</p><p><b>Original Subject:</b> ${emailContent.subject}</p><hr><div>${emailContent.body.replace(/\n/g, '<br>')}</div>`;
     const sendGridPayload = {
         personalizations: [{ to: [{ email: forwardTo }] }],
         from: { email: env.FORWARD_FROM_EMAIL, name: "Temp Mail Bot" },
         subject: `[Forwarded] ${emailContent.subject}`,
         content: [{ type: "text/html", value: forwardBody }],
     };
-
     try {
         const response = await fetch("https://api.sendgrid.com/v3/mail/send", {
             method: "POST",
-            headers: {
-                "Authorization": `Bearer ${env.SENDGRID_API_KEY}`,
-                "Content-Type": "application/json",
-            },
+            headers: { "Authorization": `Bearer ${env.SENDGRID_API_KEY}`, "Content-Type": "application/json" },
             body: JSON.stringify(sendGridPayload),
         });
         if (!response.ok) {
@@ -384,38 +390,12 @@ async function forwardEmailWithThirdParty(forwardTo, emailContent, env) {
     }
 }
 
-
-// --- UNCHANGED FUNCTIONS ---
-// The following functions are copied from the previous version without changes,
-// as they are still required for the bot to function.
-
 async function requestEmailName(chatId, env) {
     const userData = await getUserData(chatId, env);
     userData.state = 'awaiting_email_name';
     await updateUserData(chatId, userData, env);
     const text = `📧 **Email လိပ်စာအသစ် ဖန်တီးခြင်း**\n\nသင်အသုံးပြုလိုသော နာမည်ကို စာပြန်ရိုက်ထည့်ပေးပါ။ (Space မပါစေရ၊ English အက္ခရာနှင့် ဂဏန်းများသာ)။\n\nဥပမာ: \`myname123\`\n\nBot မှ သင့်နာမည်နောက်တွင် \`@${env.DOMAIN}\` ကို အလိုအလျောက် ထည့်ပေးပါလိမ့်မည်။`;
     await sendMessage(chatId, text, { inline_keyboard: [[{ text: "🔙 Menu သို့ပြန်သွားရန်", callback_data: "main_menu" }]] }, env);
-}
-
-async function createNewEmail(chatId, name, env) {
-    if (!/^[a-z0-9.-]+$/.test(name)) {
-        await sendMessage(chatId, "❌ **မှားယွင်းနေပါသည်!**\nနာမည်တွင် English အက္ခရာ အသေး (a-z)၊ ဂဏန်း (0-9)၊ နှင့် `.` `-` တို့သာ ပါဝင်ရပါမည်။ Space မပါရပါ။\n\nခလုတ်ကိုနှိပ်ပြီး ထပ်ကြိုးစားပါ။", { inline_keyboard: [[{ text: '➕ ထပ်ကြိုးစားမည်', callback_data: 'create_email' }]] }, env);
-        return;
-    }
-    const email = `${name.toLowerCase()}@${env.DOMAIN}`;
-    const emailKey = `email:${email}`;
-    const existingEmail = await env.MAIL_BOT_DB.get(emailKey);
-    if (existingEmail) {
-        await sendMessage(chatId, `😥 **လိပ်စာအသုံးပြုပြီးသားပါ။**\n\`${email}\` သည် အခြားသူတစ်ယောက် အသုံးပြုနေပါသည်။ နာမည်အသစ်တစ်ခု ထပ်ကြိုးစားပါ။`, { inline_keyboard: [[{ text: '➕ ထပ်ကြိုးစားမည်', callback_data: 'create_email' }]] }, env);
-        return;
-    }
-    await env.MAIL_BOT_DB.put(emailKey, JSON.stringify({ inbox: [], owner: chatId }));
-    const userData = await getUserData(chatId, env);
-    if (!userData.createdEmails.includes(email)) {
-        userData.createdEmails.push(email);
-    }
-    await updateUserData(chatId, userData, env);
-    await sendMessage(chatId, `✅ **အောင်မြင်ပါသည်!**\nသင်၏ email လိပ်စာအသစ်မှာ:\n\n\`${email}\`\n\n"📧 ကျွန်ုပ်၏ Email များ" ကိုနှိပ်ပြီး စီမံခန့်ခွဲနိုင်ပါသည်။`, { inline_keyboard: [[{ text: "🔙 Menu သို့ပြန်သွားရန်", callback_data: "main_menu" }]] }, env);
 }
 
 async function listUserEmails(chatId, env, messageId = null) {
