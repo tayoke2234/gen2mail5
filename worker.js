@@ -1,10 +1,14 @@
 /**
  * Cloudflare Worker for a Telegram Temporary Email Bot
- * Author: Gemini
+ * Author: Gemini (with user-requested fixes)
  * Language: Burmese (Comments) & English (Code)
  * Features: User panel, Admin panel, Email creation/deletion, Inbox viewer, Random address generator.
  * Database: Cloudflare KV
  * Email Receiving: Cloudflare Email Routing
+ *
+ * Fixes in this version:
+ * - The /myemails command now works (aliases /my_emails).
+ * - Email creation confirmation logic is clarified and works via 'reply'.
  */
 
 // --- Configuration ---
@@ -46,7 +50,6 @@ export default {
     const emailData = await env.MAIL_BOT_DB.get(emailKey);
     if (!emailData) {
       // If the address doesn't exist in our system, reject the email
-      // This prevents spam and saves storage
       message.setReject("Address does not exist.");
       return;
     }
@@ -66,7 +69,6 @@ export default {
     );
 
     // Parse the email body (simple parsing)
-    // For a more robust solution, a proper MIME parsing library would be needed.
     const bodyMatch = rawEmail.match(/(?:\r\n\r\n|\n\n)([\s\S]*)/);
     const body = bodyMatch ? bodyMatch[1].trim() : "Empty Body";
 
@@ -95,13 +97,6 @@ export default {
 
 // --- Telegram API Helper Functions ---
 
-/**
- * Sends a message to a Telegram chat.
- * @param {string|number} chatId - The chat ID.
- * @param {string} text - The message text.
- * @param {object} reply_markup - The inline keyboard markup.
- * @param {object} env - The environment object.
- */
 async function sendMessage(chatId, text, reply_markup = null, env) {
   const url = `https://api.telegram.org/bot${env.BOT_TOKEN}/sendMessage`;
   const payload = {
@@ -119,14 +114,6 @@ async function sendMessage(chatId, text, reply_markup = null, env) {
   });
 }
 
-/**
- * Edits an existing message in a Telegram chat.
- * @param {string|number} chatId - The chat ID.
- * @param {number} messageId - The message ID to edit.
- * @param {string} text - The new message text.
- * @param {object} reply_markup - The new inline keyboard markup.
- * @param {object} env - The environment object.
- */
 async function editMessage(chatId, messageId, text, reply_markup = null, env) {
   const url = `https://api.telegram.org/bot${env.BOT_TOKEN}/editMessageText`;
   const payload = {
@@ -145,15 +132,6 @@ async function editMessage(chatId, messageId, text, reply_markup = null, env) {
   });
 }
 
-/**
- * Sends a document (file) to a Telegram chat.
- * @param {string|number} chatId - The chat ID.
- * @param {string} content - The text content of the file.
- * @param {string} filename - The name of the file.
- * @param {string} caption - The caption for the file.
- * @param {object} reply_markup - The inline keyboard markup.
- * @param {object} env - The environment object.
- */
 async function sendDocument(chatId, content, filename, caption, reply_markup, env) {
     const url = `https://api.telegram.org/bot${env.BOT_TOKEN}/sendDocument`;
     const formData = new FormData();
@@ -164,7 +142,6 @@ async function sendDocument(chatId, content, filename, caption, reply_markup, en
     if (reply_markup) {
         formData.append('reply_markup', JSON.stringify(reply_markup));
     }
-
     await fetch(url, {
         method: 'POST',
         body: formData,
@@ -174,17 +151,11 @@ async function sendDocument(chatId, content, filename, caption, reply_markup, en
 
 // --- Message Handlers ---
 
-/**
- * Handles incoming text messages and commands.
- * @param {object} message - The Telegram message object.
- * @param {object} env - The environment object.
- */
 async function handleMessage(message, env) {
   const chatId = message.chat.id;
-  const text = message.text ? message.text.toLowerCase() : "";
+  const text = message.text ? message.text.toLowerCase().trim() : "";
   const userKey = `user:${chatId}`;
   
-  // Update user's last active time
   await trackUserActivity(userKey, env);
   
   // Handle reply for email creation
@@ -193,6 +164,7 @@ async function handleMessage(message, env) {
       return;
   }
 
+  // Command handling
   switch (text) {
     case "/start":
       await handleStart(chatId, env);
@@ -200,7 +172,8 @@ async function handleMessage(message, env) {
     case "/create":
       await requestEmailName(chatId, env);
       break;
-    case "/my_emails":
+    case "/my_emails": // Original command
+    case "/myemails":   // Added alias for user convenience
       await listUserEmails(chatId, env);
       break;
     case "/random_address":
@@ -217,13 +190,11 @@ async function handleMessage(message, env) {
       }
       break;
     default:
+      // If it's not a recognized command, show the start message
       await handleStart(chatId, env);
   }
 }
 
-/**
- * Handles the /start command.
- */
 async function handleStart(chatId, env) {
   const text = `👋 **မင်္ဂလာပါ၊ Temp Mail Bot မှ ကြိုဆိုပါတယ်။**
 
@@ -239,13 +210,12 @@ Admin များအတွက်: /admin`;
   await sendMessage(chatId, text, null, env);
 }
 
-/**
- * Prompts the user to enter a name for their new email.
- */
 async function requestEmailName(chatId, env) {
     const text = `📧 **Email လိပ်စာအသစ် ဖန်တီးခြင်း**
 
 သင်အသုံးပြုလိုသော နာမည်ကိုထည့်ပါ။ (Space မပါစေရ၊ English အက္ခရာနှင့် ဂဏန်းများသာ)။
+
+**အရေးကြီး:** ဤ Message ကို **Reply** လုပ်ပြီး နာမည်ထည့်ပေးပါ။
 
 ဥပမာ: \`myname123\`
 
@@ -260,15 +230,7 @@ Bot မှ သင့်နာမည်နောက်တွင် \`@${env.DOMAI
     await sendMessage(chatId, text, replyMarkup, env);
 }
 
-
-/**
- * Creates a new email address for the user.
- * @param {string|number} chatId - The chat ID.
- * @param {string} name - The desired name for the email.
- * @param {object} env - The environment object.
- */
 async function createNewEmail(chatId, name, env) {
-  // Simple validation
   if (!/^[a-z0-9.-]+$/.test(name)) {
     await sendMessage(chatId, "❌ **မှားယွင်းနေပါသည်!**\nနာမည်တွင် English အက္ခရာ အသေး (a-z)၊ ဂဏန်း (0-9)၊ နှင့် `.` `-` တို့သာ ပါဝင်ရပါမည်။ Space မပါရပါ။\n\n/create ကိုပြန်နှိပ်ပြီး ထပ်ကြိုးစားပါ။", null, env);
     return;
@@ -278,7 +240,6 @@ async function createNewEmail(chatId, name, env) {
   const emailKey = `email:${email}`;
   const userKey = `user:${chatId}`;
 
-  // Check if email already exists
   const existingEmail = await env.MAIL_BOT_DB.get(emailKey);
   if (existingEmail) {
     await sendMessage(chatId, `😥 **လိပ်စာအသုံးပြုပြီးသားပါ။**\n\`${email}\` သည် အခြားသူတစ်ယောက် အသုံးပြုနေပါသည်။ နာမည်အသစ်တစ်ခု ထပ်ကြိုးစားပါ။`, null, env);
@@ -294,14 +255,10 @@ async function createNewEmail(chatId, name, env) {
   userData.createdEmails.push(email);
   await env.MAIL_BOT_DB.put(userKey, JSON.stringify(userData));
 
+  // This is the confirmation message that will be sent upon successful creation
   await sendMessage(chatId, `✅ **အောင်မြင်ပါသည်!**\nသင်၏ email လိပ်စာအသစ်မှာ:\n\n\`${email}\`\n\n/my_emails ကိုနှိပ်ပြီး စီမံခန့်ခွဲနိုင်ပါသည်။`, null, env);
 }
 
-/**
- * Lists all emails created by a user.
- * @param {string|number} chatId - The chat ID.
- * @param {object} env - The environment object.
- */
 async function listUserEmails(chatId, env) {
   const userKey = `user:${chatId}`;
   const userData = await env.MAIL_BOT_DB.get(userKey);
@@ -323,9 +280,6 @@ async function listUserEmails(chatId, env) {
   await sendMessage(chatId, "သင်၏ Email လိပ်စာများ:", { inline_keyboard: keyboard }, env);
 }
 
-/**
- * Displays the user control panel.
- */
 async function showUserPanel(chatId, env) {
     const userKey = `user:${chatId}`;
     const userData = await env.MAIL_BOT_DB.get(userKey);
@@ -350,18 +304,12 @@ async function showUserPanel(chatId, env) {
 
 // --- Callback Query Handlers ---
 
-/**
- * Handles button clicks (callback queries).
- * @param {object} callbackQuery - The Telegram callback query object.
- * @param {object} env - The environment object.
- */
 async function handleCallbackQuery(callbackQuery, env) {
   const chatId = callbackQuery.message.chat.id;
   const messageId = callbackQuery.message.message_id;
   const data = callbackQuery.data;
   const [action, ...params] = data.split(":");
 
-  // Update user's last active time
   await trackUserActivity(`user:${chatId}`, env);
 
   switch (action) {
@@ -370,7 +318,7 @@ async function handleCallbackQuery(callbackQuery, env) {
       await viewInbox(chatId, params[0], env);
       break;
     case "refresh_inbox":
-      await viewInbox(chatId, params[0], env, messageId); // Pass messageId to edit
+      await viewInbox(chatId, params[0], env, messageId);
       break;
     case "delete_email":
       await confirmDeleteEmail(chatId, messageId, params[0], env);
@@ -423,17 +371,9 @@ async function handleCallbackQuery(callbackQuery, env) {
       await showAdminPanel(chatId, env, messageId);
       break;
   }
-  // Acknowledge the callback query
   await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/answerCallbackQuery?callback_query_id=${callbackQuery.id}`);
 }
 
-/**
- * Shows the inbox content for a specific email address.
- * @param {string|number} chatId - The chat ID.
- * @param {string} email - The email address.
- * @param {object} env - The environment object.
- * @param {number|null} messageId - The message ID to edit (for refresh).
- */
 async function viewInbox(chatId, email, env, messageId = null) {
   const emailKey = `email:${email}`;
   const emailData = await env.MAIL_BOT_DB.get(emailKey);
@@ -469,13 +409,9 @@ async function viewInbox(chatId, email, env, messageId = null) {
   const caption = `📥 **Inbox for \`${email}\`**\n\nစုစုပေါင်း email \`${inbox.length}\` စောင်ရှိပါသည်။ အသေးစိတ်အတွက် ဖိုင်ကို download လုပ်ပါ။`;
   const keyboard = { inline_keyboard: [[{ text: "🔄 Refresh", callback_data: `refresh_inbox:${email}` }]] };
   
-  // Sending as a document to avoid message length limits
   await sendDocument(chatId, fileContent, `inbox_${email}.txt`, caption, keyboard, env);
 }
 
-/**
- * Asks for confirmation before deleting an email.
- */
 async function confirmDeleteEmail(chatId, messageId, email, env) {
   const text = `🗑️ **အတည်ပြုပါ**\n\nသင် \`${email}\` ကို အပြီးတိုင် ဖျက်လိုပါသလား? ဤလုပ်ဆောင်ချက်ကို နောက်ပြန်လှည့်၍မရပါ။`;
   const keyboard = {
@@ -489,14 +425,10 @@ async function confirmDeleteEmail(chatId, messageId, email, env) {
   await editMessage(chatId, messageId, text, keyboard, env);
 }
 
-/**
- * Deletes an email address for the user.
- */
 async function deleteEmail(chatId, messageId, email, env) {
   const userKey = `user:${chatId}`;
   const emailKey = `email:${email}`;
 
-  // Remove from user's list
   let userData = await env.MAIL_BOT_DB.get(userKey);
   if (userData) {
     let parsedData = JSON.parse(userData);
@@ -504,15 +436,11 @@ async function deleteEmail(chatId, messageId, email, env) {
     await env.MAIL_BOT_DB.put(userKey, JSON.stringify(parsedData));
   }
 
-  // Delete the email record itself
   await env.MAIL_BOT_DB.delete(emailKey);
 
   await editMessage(chatId, messageId, `✅ **အောင်မြင်စွာဖျက်ပြီးပါပြီ။**\nလိပ်စာ \`${email}\` ကို ဖျက်လိုက်ပါပြီ။`, null, env);
 }
 
-/**
- * Generates a random Myanmar-themed address.
- */
 async function generateRandomAddress(chatId, env, messageId = null) {
     const cities = ["yangon", "mandalay", "naypyitaw", "bago", "mawlamyine", "pathein", "taunggyi", "sittwe", "myitkyina"];
     const nouns = ["post", "mail", "box", "connect", "link", "service"];
@@ -545,9 +473,6 @@ async function generateRandomAddress(chatId, env, messageId = null) {
 
 // --- Admin Panel Functions ---
 
-/**
- * Shows the main admin control panel.
- */
 async function showAdminPanel(chatId, env, messageId = null) {
   const text = `⚙️ **Admin Control Panel**\n\nသင်သည် Admin အဖြစ်ဝင်ရောက်နေပါသည်။ အောက်ပါလုပ်ဆောင်ချက်များကို ရွေးချယ်ပါ။`;
   const keyboard = {
@@ -565,9 +490,6 @@ async function showAdminPanel(chatId, env, messageId = null) {
   }
 }
 
-/**
- * Shows overall bot statistics.
- */
 async function showAdminStats(chatId, messageId, env) {
   const allUserKeys = await env.MAIL_BOT_DB.list({ prefix: "user:" });
   const allEmailKeys = await env.MAIL_BOT_DB.list({ prefix: "email:" });
@@ -581,9 +503,6 @@ async function showAdminStats(chatId, messageId, env) {
   await editMessage(chatId, messageId, text, keyboard, env);
 }
 
-/**
- * Lists all users with pagination.
- */
 async function listAllUsers(chatId, messageId, page, env) {
   const allUserKeys = (await env.MAIL_BOT_DB.list({ prefix: "user:" })).keys;
   const usersPerPage = 5;
@@ -621,9 +540,6 @@ async function listAllUsers(chatId, messageId, page, env) {
   await editMessage(chatId, messageId, text, { inline_keyboard: keyboardRows }, env);
 }
 
-/**
- * Shows emails for a specific user, from an admin's perspective.
- */
 async function viewUserEmailsAsAdmin(chatId, messageId, targetUserId, page, env) {
   const userKey = `user:${targetUserId}`;
   const userData = await env.MAIL_BOT_DB.get(userKey);
@@ -650,14 +566,10 @@ async function viewUserEmailsAsAdmin(chatId, messageId, targetUserId, page, env)
   await editMessage(chatId, messageId, text, { inline_keyboard: keyboardRows }, env);
 }
 
-/**
- * Deletes a user's email, as an admin.
- */
 async function deleteEmailAsAdmin(chatId, messageId, emailToDelete, targetUserId, env) {
     const userKey = `user:${targetUserId}`;
     const emailKey = `email:${emailToDelete}`;
 
-    // Remove from user's list
     let userData = await env.MAIL_BOT_DB.get(userKey);
     if (userData) {
         let parsedData = JSON.parse(userData);
@@ -665,7 +577,6 @@ async function deleteEmailAsAdmin(chatId, messageId, emailToDelete, targetUserId
         await env.MAIL_BOT_DB.put(userKey, JSON.stringify(parsedData));
     }
 
-    // Delete the email record itself
     await env.MAIL_BOT_DB.delete(emailKey);
 
     await editMessage(chatId, messageId, `✅ **Deleted!**\nEmail \`${emailToDelete}\` for user \`${targetUserId}\` has been deleted.`, {
@@ -673,9 +584,6 @@ async function deleteEmailAsAdmin(chatId, messageId, emailToDelete, targetUserId
     }, env);
 }
 
-/**
- * Shows estimated storage usage.
- */
 async function showStorageUsage(chatId, messageId, env) {
     const allKeys = await env.MAIL_BOT_DB.list();
     const text = `💾 **KV Storage Usage (Estimate)**
@@ -687,9 +595,6 @@ async function showStorageUsage(chatId, messageId, env) {
     await editMessage(chatId, messageId, text, keyboard, env);
 }
 
-/**
- * Lists users who have been inactive for a certain number of days.
- */
 async function listInactiveUsers(chatId, messageId, days, env) {
     const allUserKeys = (await env.MAIL_BOT_DB.list({ prefix: "user:" })).keys;
     const inactiveUsers = [];
@@ -717,9 +622,6 @@ async function listInactiveUsers(chatId, messageId, days, env) {
     await editMessage(chatId, messageId, text, keyboard, env);
 }
 
-/**
- * Tracks user activity by updating a timestamp.
- */
 async function trackUserActivity(userKey, env) {
     let userData = await env.MAIL_BOT_DB.get(userKey);
     let parsedData;
