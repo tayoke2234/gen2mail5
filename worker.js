@@ -2,24 +2,14 @@
  * Cloudflare Worker for a Telegram Temporary Email Bot
  * Author: Gemini (with user-requested enhancements)
  * Language: Burmese (Comments & UI) & English (Code)
- * Version: 3.0 (Full User & Admin Panels)
+ * Version: 4.0 (Advanced Email Parser Fix)
  *
- * --- Features in this Version ---
- * 1.  Interactive User Panel (/start, /panel).
- * 2.  Comprehensive Admin Panel (/admin) with:
- * - Bot Statistics (Total users, total emails).
- * - Paginated User List.
- * - Ability to inspect individual users and their emails.
- * - Ability for admin to delete user emails.
- * - List of inactive users for cleanup.
- * 3.  Interactive, paginated inbox with read/unread/delete management.
+ * --- Fix in this Version ---
+ * - Replaced the simple email body parser with a more robust multipart-aware parser.
+ * - Prioritizes 'text/plain' content to correctly display emails from services like Riot Games.
+ * - Handles complex MIME structures to avoid showing raw code/gibberish to the user.
+ * - All previous features like User and Admin panels are retained.
  */
-
-// --- Configuration ---
-// These values are set in the Worker's environment variables (Settings -> Variables)
-// BOT_TOKEN: Your Telegram bot token
-// ADMIN_IDS: Comma-separated list of admin Telegram user IDs
-// DOMAIN: The domain you are using for emails
 
 // --- Main Handler ---
 export default {
@@ -35,6 +25,9 @@ export default {
 		return new Response("OK");
 	},
 
+	/**
+	 * Handles incoming emails with an advanced parser.
+	 */
 	async email(message, env) {
 		const to = message.to.toLowerCase();
 		const emailKey = `email:${to}`;
@@ -44,21 +37,85 @@ export default {
 			return;
 		}
 
-		const reader = message.raw.getReader();
-		let chunks = [];
-		while (true) {
-			const { done, value } = await reader.read();
-			if (done) break;
-			chunks.push(value);
+		// Convert the raw stream to text to parse it
+		const rawEmail = await new Response(message.raw).text();
+
+		// --- NEW ADVANCED PARSING LOGIC ---
+		function getBody(raw, headers) {
+			const contentTypeHeader = headers.get('content-type') || '';
+
+			// If it's a multipart email (like from Riot Games)
+			if (contentTypeHeader.includes('multipart')) {
+				const boundaryMatch = contentTypeHeader.match(/boundary="?([^"]*)"?/);
+				// If boundary is not found, it's a malformed email, try to find body manually
+				if (!boundaryMatch) {
+                    const fallbackBody = raw.substring(raw.indexOf("\r\n\r\n") + 4);
+                    return fallbackBody || "Could not find multipart boundary or body.";
+                }
+
+				const boundary = boundaryMatch[1];
+				const parts = raw.split(`--${boundary}`);
+				
+				let plainTextBody = null;
+                let htmlBody = null;
+
+				// Look for the plain text part first, which is ideal
+				for (const part of parts) {
+					if (part.includes('Content-Type: text/plain')) {
+						const bodyMatch = part.match(/(?:\r\n\r\n|\n\n)([\s\S]*)/);
+						if (bodyMatch && bodyMatch[1]) {
+							plainTextBody = bodyMatch[1];
+                            // Basic decoding for quoted-printable, which is common
+                            try {
+                                plainTextBody = plainTextBody.replace(/=\r\n/g, '').replace(/=3D/g, '=');
+                            } catch (e) { /* ignore decoding errors */ }
+						}
+                        break; // Found the best part, no need to look further
+					}
+				}
+                
+                // If we found a plain text body, return it
+                if (plainTextBody) {
+                    return plainTextBody.trim();
+                }
+
+				// If no plain text, fall back to HTML and strip tags
+				for (const part of parts) {
+					if (part.includes('Content-Type: text/html')) {
+						const bodyMatch = part.match(/(?:\r\n\r\n|\n\n)([\s\S]*)/);
+						if (bodyMatch && bodyMatch[1]) {
+							htmlBody = bodyMatch[1];
+                            // Basic decoding for quoted-printable
+                            try {
+                                htmlBody = htmlBody.replace(/=\r\n/g, '').replace(/=3D/g, '=');
+                            } catch(e) {}
+                            // Basic HTML tag stripping
+							return htmlBody.replace(/<style([\s\S]*?)<\/style>/gi, '')
+                                         .replace(/<script([\s\S]*?)<\/script>/gi, '')
+                                         .replace(/<[^>]*>/g, ' ')
+                                         .replace(/\s+/g, ' ')
+                                         .trim();
+						}
+					}
+				}
+			}
+			
+			// If not multipart, or if parsing failed, use a simple fallback on the whole raw email
+			const bodyMatch = raw.match(/(?:\r\n\r\n|\n\n)([\s\S]*)/);
+			if (bodyMatch && bodyMatch[1]) {
+				return bodyMatch[1].trim();
+			}
+
+			return "Email body could not be parsed.";
 		}
-		const rawEmail = new TextDecoder("utf-8").decode(new Uint8Array(chunks.reduce((acc, chunk) => [...acc, ...chunk], [])));
-		const bodyMatch = rawEmail.match(/(?:\r\n\r\n|\n\n)([\s\S]*)/);
-		const body = bodyMatch ? bodyMatch[1].trim() : "Empty Body";
+
+		const body = getBody(rawEmail, message.headers);
+		// --- END OF NEW LOGIC ---
 
 		const newEmail = {
 			from: message.headers.get("from") || "Unknown Sender",
 			subject: message.headers.get("subject") || "No Subject",
-			body: body,
+			body: body, // Use the newly parsed body
 			receivedAt: new Date().toISOString(),
 			read: false,
 		};
@@ -67,7 +124,7 @@ export default {
 		inbox.unshift(newEmail);
 		await env.MAIL_BOT_DB.put(emailKey, JSON.stringify({ inbox, owner }));
 
-		await sendMessage(owner, `📬 **လိပ်စာအသစ်ရောက်ရှိ!**\n\nသင်၏လိပ်စာ \`${to}\` သို့ email အသစ်တစ်စောင် ရောက်ရှိနေပါသည်။ \n\n/my_emails မှတစ်ဆင့် စစ်ဆေးနိုင်ပါသည်။`, null, env);
+		await sendMessage(owner, `📬 **လိပ်စာအသစ်ရောက်ရှိ!**\n\nသင်၏လိပ်စာ \`${to}\` သို့ email အသစ်တစ်စောင် ရောက်ရှိနေပါသည်။`, { inline_keyboard: [[{ text: "📥 Inbox ကိုကြည့်ရန်", callback_data: `view_inbox:${to}:1` }]] }, env);
 	},
 };
 
@@ -416,10 +473,75 @@ async function listInactiveUsers(chatId, messageId, days, env) {
     await editMessage(chatId, messageId, text, keyboard, env);
 }
 
-// --- Unchanged Helper Functions ---
-async function trackUserActivity(userKey, env) { /* ... same as before ... */ }
-async function requestEmailName(chatId, env) { /* ... same as before ... */ }
-async function createNewEmail(chatId, name, env) { /* ... same as before ... */ }
-async function confirmDeleteEmail(chatId, messageId, email, env) { /* ... same as before ... */ }
-async function deleteEmail(chatId, messageId, email, env) { /* ... same as before ... */ }
-async function generateRandomAddress(chatId, env, messageId = null) { /* ... same as before ... */ }
+// --- Other Unchanged Helper Functions ---
+async function trackUserActivity(userKey, env) {
+	let userData = await env.MAIL_BOT_DB.get(userKey);
+	let parsedData = userData ? JSON.parse(userData) : { createdEmails: [] };
+	parsedData.lastActive = new Date().toISOString();
+	await env.MAIL_BOT_DB.put(userKey, JSON.stringify(parsedData));
+}
+async function requestEmailName(chatId, env) {
+    const text = `📧 **Email လိပ်စာအသစ် ဖန်တီးခြင်း**\n\nသင်အသုံးပြုလိုသော နာမည်ကိုထည့်ပါ။ (Space မပါစေရ၊ English အက္ခရာနှင့် ဂဏန်းများသာ)။\n\n**အရေးကြီး:** ဤ Message ကို **Reply** လုပ်ပြီး နာမည်ထည့်ပေးပါ။\n\nဥပမာ: \`myname123\`\n\nBot မှ သင့်နာမည်နောက်တွင် \`@${env.DOMAIN}\` ကို အလိုအလျောက် ထည့်ပေးပါလိမ့်မည်။`;
+    await sendMessage(chatId, text, { force_reply: true, selective: true, input_field_placeholder: 'your-name-here' }, env);
+}
+async function createNewEmail(chatId, name, env) {
+	if (!/^[a-z0-9.-]+$/.test(name)) {
+		await sendMessage(chatId, "❌ **မှားယွင်းနေပါသည်!**\nနာမည်တွင် English အက္ခရာ အသေး (a-z)၊ ဂဏန်း (0-9)၊ နှင့် `.` `-` တို့သာ ပါဝင်ရပါမည်။ Space မပါရပါ။\n\n/create ကိုပြန်နှိပ်ပြီး ထပ်ကြိုးစားပါ။", null, env);
+		return;
+	}
+	const email = `${name.toLowerCase()}@${env.DOMAIN}`;
+	const emailKey = `email:${email}`;
+	const userKey = `user:${chatId}`;
+	const existingEmail = await env.MAIL_BOT_DB.get(emailKey);
+	if (existingEmail) {
+		await sendMessage(chatId, `😥 **လိပ်စာအသုံးပြုပြီးသားပါ။**\n\`${email}\` သည် အခြားသူတစ်ယောက် အသုံးပြုနေပါသည်။ နာမည်အသစ်တစ်ခု ထပ်ကြိုးစားပါ။`, null, env);
+		return;
+	}
+	await env.MAIL_BOT_DB.put(emailKey, JSON.stringify({ inbox: [], owner: chatId }));
+	let userData = await env.MAIL_BOT_DB.get(userKey);
+	userData = userData ? JSON.parse(userData) : { createdEmails: [], lastActive: new Date().toISOString() };
+	userData.createdEmails.push(email);
+	await env.MAIL_BOT_DB.put(userKey, JSON.stringify(userData));
+	await sendMessage(chatId, `✅ **အောင်မြင်ပါသည်!**\nသင်၏ email လိပ်စာအသစ်မှာ:\n\n\`${email}\`\n\n/my_emails ကိုနှိပ်ပြီး စီမံခန့်ခွဲနိုင်ပါသည်။`, null, env);
+}
+async function confirmDeleteEmail(chatId, messageId, email, env) {
+	const text = `🗑️ **အတည်ပြုပါ**\n\nသင် \`${email}\` လိပ်စာတစ်ခုလုံးကို အပြီးတိုင် ဖျက်လိုပါသလား? Inbox ထဲမှ email များအားလုံးပါ ဖျက်သိမ်းသွားမည်ဖြစ်ပြီး ဤလုပ်ဆောင်ချက်ကို နောက်ပြန်လှည့်၍မရပါ။`;
+	const keyboard = {
+		inline_keyboard: [
+			[{ text: "✅ ဟုတ်ကဲ့၊ ဖျက်မည်", callback_data: `delete_confirm:${email}` }, { text: "❌ မဟုတ်ပါ", callback_data: "delete_cancel" }, ],
+		],
+	};
+	await editMessage(chatId, messageId, text, keyboard, env);
+}
+async function deleteEmail(chatId, messageId, email, env) {
+	const userKey = `user:${chatId}`;
+	const emailKey = `email:${email}`;
+	let userData = await env.MAIL_BOT_DB.get(userKey);
+	if (userData) {
+		let parsedData = JSON.parse(userData);
+		parsedData.createdEmails = parsedData.createdEmails.filter(e => e !== email);
+		await env.MAIL_BOT_DB.put(userKey, JSON.stringify(parsedData));
+	}
+	await env.MAIL_BOT_DB.delete(emailKey);
+	await editMessage(chatId, messageId, `✅ **အောင်မြင်စွာဖျက်ပြီးပါပြီ။**\nလိပ်စာ \`${email}\` ကို ဖျက်လိုက်ပါပြီ။`, null, env);
+}
+async function generateRandomAddress(chatId, env, messageId = null) {
+    const cities = ["yangon", "mandalay", "naypyitaw", "bago", "mawlamyine", "pathein", "taunggyi", "sittwe", "myitkyina"];
+    const nouns = ["post", "mail", "box", "connect", "link", "service"];
+    const randomCity = cities[Math.floor(Math.random() * cities.length)];
+    const randomNoun = nouns[Math.floor(Math.random() * nouns.length)];
+    const randomNumber = Math.floor(100 + Math.random() * 900);
+    const randomName = `${randomCity}.${randomNoun}${randomNumber}`;
+    const text = `🎲 **ကျပန်းလိပ်စာ**\n\nအကြံပြုထားသော လိပ်စာမှာ:\n\`${randomName}@${env.DOMAIN}\`\n\nသင်ဤလိပ်စာကို အသုံးပြုလိုပါသလား?`;
+    const keyboard = {
+        inline_keyboard: [
+            [{ text: "✅ ဒီလိပ်စာကို ဖန်တီးမည်", callback_data: `create_random:${randomName}` }],
+            [{ text: "🎲 နောက်တစ်ခု", callback_data: "generate_another" }]
+        ]
+    };
+    if (messageId) {
+        await editMessage(chatId, messageId, text, keyboard, env);
+    } else {
+        await sendMessage(chatId, text, keyboard, env);
+    }
+}
