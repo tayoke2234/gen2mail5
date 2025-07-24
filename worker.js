@@ -1,7 +1,7 @@
 /**
  * Cloudflare Worker for a Telegram Temporary Email Bot
  * Author: Gemini (with user-requested features)
- * Version: 3.0 (Improved Email Readability & UI)
+ * Version: 3.1 (Broadcast Stability Fix)
  * Language: Burmese (Comments) & English (Code)
  * Features: Interactive menu, Paginated inbox, Clear single email view, Admin panel, Broadcast, Email management.
  * Database: Cloudflare KV
@@ -229,7 +229,6 @@ async function listUserEmails(chatId, env, messageId = null) {
 
     const keyboard = [];
     for (const email of userData.createdEmails) {
-        // Now each email address is a button that leads to its inbox
         keyboard.push([{ text: `📬 ${email}`, callback_data: `view_inbox:${email}:1` }]);
     }
     keyboard.push([{ text: "🔙 Menu သို့ပြန်သွားရန်", callback_data: "main_menu" }]);
@@ -301,23 +300,19 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
             await generateRandomAddress(chatId, env, messageId);
             break;
 
-        // --- NEW: Inbox and Email Viewing ---
+        // --- Inbox and Email Viewing ---
         case "view_inbox":
-            // params[0] = email, params[1] = page
             await viewInbox(chatId, messageId, params[0], parseInt(params[1] || 1), env);
             break;
         case "view_email":
-            // params[0] = email, params[1] = emailIndex, params[2] = page from
             await viewSingleEmail(chatId, messageId, params[0], parseInt(params[1]), parseInt(params[2]), env);
             break;
         
         // --- Email Deletion ---
         case "delete_email_prompt":
-             // params[0] = emailAddress
             await confirmDeleteEmail(chatId, messageId, params[0], env);
             break;
         case "delete_email_confirm":
-            // params[0] = emailAddress
             await deleteEmail(chatId, messageId, params[0], env);
             break;
 
@@ -336,15 +331,17 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
             await executeBroadcast(chatId, messageId, env, ctx);
             break;
         case "broadcast_cancel":
+            // **FIXED**: This now correctly clears the user's state.
             await editMessage(chatId, messageId, "❌ Broadcast ကို ပယ်ဖျက်လိုက်ပါသည်။", { inline_keyboard: [[{ text: "⬅️ Admin Panel သို့ပြန်သွားရန်", callback_data: "admin_panel" }]] }, env);
             const adminData = await getUserData(chatId, env);
-            delete adminData.broadcast_message;
+            delete adminData.broadcast_message; // Clear message if it exists
+            adminData.state = null; // Reset the state
             await updateUserData(chatId, adminData, env);
             break;
     }
 }
 
-// --- NEW/OVERHAULED: Email Viewing Functions ---
+// --- Email Viewing Functions ---
 
 async function viewInbox(chatId, messageId, emailAddress, page, env) {
     const emailKey = `email:${emailAddress}`;
@@ -369,8 +366,6 @@ async function viewInbox(chatId, messageId, emailAddress, page, env) {
         pageEmails.forEach((mail, index) => {
             const originalIndex = startIndex + index;
             const subject = mail.subject.substring(0, 25) + (mail.subject.length > 25 ? '...' : '');
-            const from = mail.from.substring(0, 25) + (mail.from.length > 25 ? '...' : '');
-            // Pass the current page number to the callback for the back button
             keyboard.push([{ text: `📧 ${subject}`, callback_data: `view_email:${emailAddress}:${originalIndex}:${page}` }]);
         });
     }
@@ -410,7 +405,6 @@ async function viewSingleEmail(chatId, messageId, emailAddress, emailIndex, from
         return;
     }
     
-    // Truncate body to avoid hitting Telegram message limits
     const body = mail.body.length > 3500 ? mail.body.substring(0, 3500) + "\n\n[...Message Truncated...]" : mail.body;
 
     let text = `**From:** \`${mail.from}\`\n`;
@@ -420,7 +414,6 @@ async function viewSingleEmail(chatId, messageId, emailAddress, emailIndex, from
 
     const keyboard = {
         inline_keyboard: [
-            // The back button now remembers which page of the inbox you were on
             [{ text: `🔙 Inbox (Page ${fromPage}) သို့ပြန်သွားရန်`, callback_data: `view_inbox:${emailAddress}:${fromPage}` }]
         ]
     };
@@ -437,7 +430,7 @@ async function confirmDeleteEmail(chatId, messageId, email, env) {
         inline_keyboard: [
             [
                 { text: "✅ ဟုတ်ကဲ့၊ ဖျက်မည်", callback_data: `delete_email_confirm:${email}` },
-                { text: "❌ မဟုတ်ပါ", callback_data: `view_inbox:${email}:1` }, // Go back to inbox
+                { text: "❌ မဟုတ်ပါ", callback_data: `view_inbox:${email}:1` },
             ],
         ],
     };
@@ -485,6 +478,8 @@ async function showAdminStats(chatId, messageId, env) {
 async function requestBroadcastMessage(chatId, messageId, env) {
     const adminData = await getUserData(chatId, env);
     adminData.state = 'awaiting_broadcast_message';
+    // **FIXED**: Clear any old, stale message data before starting a new broadcast.
+    delete adminData.broadcast_message;
     await updateUserData(chatId, adminData, env);
 
     const text = "📢 **Broadcast Message**\n\nUser အားလုံးထံ ပေးပို့လိုသော စာသားကို ရေးပြီး ပို့ပေးပါ။\n\n*Markdown formatting အသုံးပြုနိုင်ပါသည်။*";
