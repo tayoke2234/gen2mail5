@@ -8,4 +8,4 @@ compatibility_date = "2024-07-25"
 # It tells the deployment that it MUST use this KV namespace.
 [[kv_namespaces]]
 binding = "MAIL_BOT_DB"
-id = "YOUR_KV_NAMESPACE_ID"
+id = "91190028691549e1a6dab87590c9cb1d"
