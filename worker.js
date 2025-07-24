@@ -1,7 +1,7 @@
 /**
  * Cloudflare Worker for a Telegram Temporary Email Bot
  * Author: Gemini (with user-requested features)
- * Version: 5.1 (Robust Callback Handling Fix)
+ * Version: 5.2 (Clean Email Body View)
  * Language: Burmese (Comments) & English (Code)
  * Features: Interactive menu, Paginated inbox, User stats, Email forwarding setup, Admin panel, Broadcast, Email management, User management for admins.
  * Database: Cloudflare KV
@@ -391,6 +391,41 @@ async function viewInbox(chatId, messageId, emailAddress, page, env) {
     await editMessage(chatId, messageId, text, { inline_keyboard: keyboard }, env);
 }
 
+/**
+ * --- ပြင်ဆင်မှု အပိုင်း ---
+ * Email Body ကို သန့်စင်ပေးသော Function အသစ်။
+ * ဤ function သည် HTML tags များ၊ မလိုအပ်သော space များကို ဖယ်ရှားပြီး ဖတ်ရလွယ်ကူသော စာသားသက်သက်အဖြစ် ပြောင်းပေးသည်။
+ */
+function cleanEmailBody(html) {
+  if (!html) return "Empty Body";
+  let text = html;
+  
+  // စာကြောင်းအသစ်များအတွက် အသုံးများသော tag များကို newline အဖြစ်ပြောင်းခြင်း
+  text = text.replace(/<br\s*\/?>/gi, '\n');
+  text = text.replace(/<\/p>/gi, '\n\n');
+  text = text.replace(/<\/div>/gi, '\n\n');
+  text = text.replace(/<\/h[1-6]>/gi, '\n\n');
+
+  // ကျန်ရှိသော HTML tag အားလုံးကို ဖယ်ရှားခြင်း
+  text = text.replace(/<[^>]+>/g, '');
+
+  // HTML entities များကို သက်ဆိုင်ရာ စာလုံးများဖြင့် အစားထိုးခြင်း
+  text = text.replace(/&nbsp;/gi, ' ');
+  text = text.replace(/&amp;/gi, '&');
+  text = text.replace(/&lt;/gi, '<');
+  text = text.replace(/&gt;/gi, '>');
+  text = text.replace(/&quot;/gi, '"');
+  text = text.replace(/&#39;/gi, "'");
+  text = text.replace(/&apos;/gi, "'");
+
+  // မလိုအပ်သော space နှင့် line အပိုများကို ရှင်းလင်းခြင်း
+  text = text.replace(/[ \t]+/g, ' ').trim(); // space အပိုများ ဖယ်ရှားခြင်း
+  text = text.replace(/\n{3,}/g, '\n\n'); // line အပိုများ ဖယ်ရှားခြင်း
+
+  return text.trim();
+}
+
+
 async function viewSingleEmail(chatId, messageId, emailAddress, emailIndex, fromPage, env) {
     await editMessage(chatId, messageId, "⏳ Email ကို ဖွင့်နေပါသည်...", null, env);
 
@@ -410,13 +445,18 @@ async function viewSingleEmail(chatId, messageId, emailAddress, emailIndex, from
             await editMessage(chatId, messageId, "❌ **Error**\nဤ email ကို ဆွဲထုတ်၍မရပါ။ Inbox ကို refresh လုပ်ပြီး ပြန်စမ်းကြည့်ပါ။", { inline_keyboard: [[{ text: `🔙 Inbox သို့ပြန်သွားရန်`, callback_data: `view_inbox:${encode(emailAddress)}:${fromPage}` }]] }, env);
             return;
         }
-
-        const body = mail.body.length > 3500 ? mail.body.substring(0, 3500) + "\n\n[...Message Truncated...]" : mail.body;
+        
+        // --- ပြင်ဆင်မှု အပိုင်း ---
+        // မူလ mail.body ကို တိုက်ရိုက်မသုံးတော့ဘဲ cleanEmailBody function ဖြင့် သန့်စင်ထားသော စာသားကို အသုံးပြုခြင်း
+        const cleanedBody = cleanEmailBody(mail.body);
+        
+        // သန့်စင်ပြီးသား စာသားကို Telegram ၏ စာလုံးရေကန့်သတ်ချက်အတွင်း ထားရှိခြင်း
+        const body = cleanedBody.length > 3500 ? cleanedBody.substring(0, 3500) + "\n\n[...Message Truncated...]" : cleanedBody;
         
         let text = `**From:** \`${mail.from}\`\n`;
         text += `**Subject:** \`${mail.subject}\`\n`;
         text += `**Received:** \`${new Date(mail.receivedAt).toLocaleString('en-GB')}\`\n`;
-        text += `\n----------------------------------------\n\n${body}`;
+        text += `\n----------------------------------------\n\n${body}`; // သန့်စင်ထားသော body ကို ဤနေရာတွင် အသုံးပြုသည်
 
         const keyboard = {
             inline_keyboard: [
@@ -533,7 +573,12 @@ async function forwardEmailWithThirdParty(forwardTo, emailContent, env) {
         console.error("SendGrid API Key or From Email not configured. Skipping forward.");
         return;
     }
-    const forwardBody = `<p>--- This is an automated forward from your Temp Mail Bot ---</p><p><b>Original Sender:</b> ${emailContent.from}</p><p><b>Original Subject:</b> ${emailContent.subject}</p><hr><div>${emailContent.body.replace(/\n/g, '<br>')}</div>`;
+    
+    // --- ပြင်ဆင်မှု အပိုင်း ---
+    // Forward လုပ်တဲ့ email ကိုပါ သန့်စင်ပြီးမှ ပို့ပေးခြင်း (HTML အဖြစ်ဆက်ပို့သော်လည်း ပိုရှင်းသွားအောင်)
+    const cleanedBodyForForwarding = cleanEmailBody(emailContent.body);
+    const forwardBody = `<p>--- This is an automated forward from your Temp Mail Bot ---</p><p><b>Original Sender:</b> ${emailContent.from}</p><p><b>Original Subject:</b> ${emailContent.subject}</p><hr><div>${cleanedBodyForForwarding.replace(/\n/g, '<br>')}</div>`;
+
     const sendGridPayload = {
         personalizations: [{ to: [{ email: forwardTo }] }],
         from: { email: env.FORWARD_FROM_EMAIL, name: "Temp Mail Bot" },
