@@ -1,3 +1,11 @@
+# This is the configuration file for your Cloudflare Worker.
+
 name = "gen2mail5"
 main = "worker.js"
 compatibility_date = "2024-07-25"
+
+# This part is NEW and VERY IMPORTANT.
+# It tells the deployment that it MUST use this KV namespace.
+[[kv_namespaces]]
+binding = "MAIL_BOT_DB"
+id = "YOUR_KV_NAMESPACE_ID"
