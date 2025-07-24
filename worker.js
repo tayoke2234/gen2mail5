@@ -1,7 +1,7 @@
 /**
  * Cloudflare Worker for a Telegram Temporary Email Bot
  * Author: Gemini (with user-requested features)
- * Version: 5.3 (Robust Parsing & Persistent Menu)
+ * Version: 5.4 (Advanced Content Parser)
  * Language: Burmese (Comments) & English (Code)
  * Features: Interactive menu, Paginated inbox, User stats, Email forwarding setup, Admin panel, Broadcast, Email management, User management for admins, Persistent command menu.
  * Database: Cloudflare KV
@@ -15,9 +15,6 @@ const decode = (str) => decodeURIComponent(str);
 
 // --- Main Handler ---
 export default {
-  /**
-   * Handles incoming HTTP requests from Telegram's webhook.
-   */
   async fetch(request, env, ctx) {
     if (request.method === "POST") {
       try {
@@ -34,9 +31,6 @@ export default {
     return new Response("OK");
   },
 
-  /**
-   * Handles incoming emails via Cloudflare Email Routing.
-   */
   async email(message, env) {
     const to = message.to.toLowerCase();
     const emailKey = `email:${to}`;
@@ -149,8 +143,6 @@ async function handleMessage(message, env) {
     const text = message.text ? message.text.trim() : "";
     const userData = await getUserData(chatId, env);
 
-    // --- ပြင်ဆင်မှု အပိုင်း ---
-    // State handling (user is in a conversation)
     if (userData.state) {
         let stateHandled = true;
         switch (userData.state) {
@@ -171,33 +163,29 @@ async function handleMessage(message, env) {
         if (stateHandled) {
             userData.state = null;
             await updateUserData(chatId, userData, env);
-            return; // Important: exit after handling state
+            return;
         }
     }
 
-    // --- ပြင်ဆင်မှု အပိုင်း ---
-    // Command handling
     if (text.startsWith('/')) {
         switch (text.toLowerCase()) {
             case "/start":
             case "/menu":
                 await showMainMenu(chatId, env);
                 break;
-            // Persistent menu commands
             case "/my_emails":
-                await listUserEmails(chatId, env, null); // null messageId to send new message
+                await listUserEmails(chatId, env, null);
                 break;
             case "/create_email":
-                await requestEmailName(chatId, null, env); // null messageId to send new message
+                await requestEmailName(chatId, null, env);
                 break;
             case "/admin_panel":
                 if (isAdmin(chatId, env)) {
-                    await showAdminPanel(chatId, env, null); // null messageId to send new message
+                    await showAdminPanel(chatId, env, null);
                 } else {
                     await sendMessage(chatId, "🤔 Command ကို နားမလည်ပါ။ /start ကိုနှိပ်ပြီး menu ကိုပြန်ခေါ်နိုင်ပါသည်။", null, env);
                 }
                 break;
-            // Command to set up the persistent menu
             case "/setup_menu":
                  if (isAdmin(chatId, env)) {
                     await setupCommands(chatId, env);
@@ -206,34 +194,25 @@ async function handleMessage(message, env) {
             default:
                 await sendMessage(chatId, "🤔 Command ကို နားမလည်ပါ။ /start ကိုနှိပ်ပြီး menu ကိုပြန်ခေါ်နိုင်ပါသည်။", null, env);
         }
-        return; // Exit after handling command
+        return;
     }
 }
 
 // --- Persistent Menu Setup ---
-
-/**
- * --- အသစ်ထပ်ထည့်သော Function ---
- * Bot ၏ command menu များကို Telegram တွင် တပ်ဆင်ရန်။
- * Admin က /setup_menu ဟု ရိုက်ထည့်လိုက်သောအခါ ဤ function အလုပ်လုပ်မည်။
- */
 async function setupCommands(chatId, env) {
     await sendMessage(chatId, '⏳ Command menu များကို တပ်ဆင်နေပါသည်...', null, env);
     
-    // User အားလုံးအတွက် command များ
     const userCommands = [
         { command: 'start', description: 'Bot ကိုစတင်ရန် (သို့) Menu ကိုပြရန်' },
         { command: 'my_emails', description: '📧 သင်၏ Email များကို ကြည့်ရှုရန်' },
         { command: 'create_email', description: '➕ Email လိပ်စာအသစ် ဖန်တီးရန်' },
     ];
 
-    // User အားလုံးအတွက် default အဖြစ် သတ်မှတ်ခြင်း
     await apiRequest('setMyCommands', {
         commands: userCommands,
         scope: { type: 'default' }
     }, env);
 
-    // Admin များအတွက် command များ (user command များ + admin command)
     const adminCommands = [
         ...userCommands,
         { command: 'admin_panel', description: '👑 Admin Control Panel' }
@@ -298,7 +277,6 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
         case "random_address": await generateRandomAddress(chatId, env, messageId); break;
         case "create_random": 
             await createNewEmail(chatId, decodedParams[0], userData, env);
-            await updateUserData(chatId, userData, env);
             await editMessage(chatId, messageId, `✅ ကျပန်းလိပ်စာ \`${decodedParams[0]}@${env.DOMAIN}\` ကို အောင်မြင်စွာဖန်တီးပြီးပါပြီ။`, { inline_keyboard: [[{ text: "🔙 Menu သို့ပြန်သွားရန်", callback_data: "main_menu" }]] }, env);
             break;
         case "generate_another": await generateRandomAddress(chatId, env, messageId); break;
@@ -359,15 +337,11 @@ async function createNewEmail(chatId, name, userData, env) {
     if (!userData.createdEmails.includes(email)) {
         userData.createdEmails.push(email);
     }
-    await updateUserData(chatId, userData, env); // Update user data after pushing new email
+    await updateUserData(chatId, userData, env);
     
     await sendMessage(chatId, `✅ **အောင်မြင်ပါသည်!**\nသင်၏ email လိပ်စာအသစ်မှာ:\n\n\`${email}\`\n\n"📧 ကျွန်ုပ်၏ Email များ" ကိုနှိပ်ပြီး စီမံခန့်ခွဲနိုင်ပါသည်။`, { inline_keyboard: [[{ text: "🔙 Menu သို့ပြန်သွားရန်", callback_data: "main_menu" }]] }, env);
 }
 
-/**
- * --- ပြင်ဆင်မှု အပိုင်း ---
- * messageId မပါလာလျှင် (Menu မှ တိုက်ရိုက်ခေါ်လျှင်) စာအသစ်ပို့ပေးရန် ပြင်ဆင်ထားသည်။
- */
 async function requestEmailName(chatId, messageId, env) {
     const userData = await getUserData(chatId, env);
     userData.state = 'awaiting_email_name';
@@ -469,44 +443,62 @@ async function viewInbox(chatId, messageId, emailAddress, page, env) {
 
 /**
  * --- ပြင်ဆင်မှု အပိုင်း ---
- * Email Body ကို ပိုမိုကောင်းမွန်စွာ သန့်စင်ပေးသော Function အသစ်။
- * ဤ function သည် ရှုပ်ထွေးသော HTML များကို ပိုမိုကောင်းမွန်စွာကိုင်တွယ်နိုင်ပြီး အမှားအယွင်းများကို လျှော့ချပေးသည်။
+ * Email Body ကို အဆင့်မြင့်နည်းလမ်းဖြင့် သန့်စင်ပေးသော Function အသစ်။
+ * ဤ function သည် ရှုပ်ထွေးသော HTML (Verification email များ) ကို ကောင်းမွန်စွာကိုင်တွယ်နိုင်ပြီး
+ * အရေးကြီးသော link များကို ထုတ်နှုတ်ပြသပေးသည်။
  */
 function cleanEmailBody(html) {
-  if (!html) return "Empty Body";
-  let text = html;
-  
-  // 1. Remove style and script blocks completely
-  text = text.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '');
-  text = text.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '');
+    if (!html) return "Empty Body";
 
-  // 2. Replace block-level tags with newlines
-  text = text.replace(/<br\s*\/?>/gi, '\n');
-  text = text.replace(/<\/p>|<\/div>|<\/li>|<\/h[1-6]>/gi, '\n');
-  
-  // 3. Remove all remaining HTML tags, but leave a space
-  text = text.replace(/<[^>]+>/g, ' ');
+    // 1. အသုံးမဝင်သော tag များကို အကြောင်းအရာနှင့်တကွ ဖယ်ရှားခြင်း
+    let cleanHtml = html
+        .replace(/<head[^>]*>[\s\S]*?<\/head>/gi, '')
+        .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+        .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '');
 
-  // 4. Decode common HTML entities
-  const entities = {
-      '&nbsp;': ' ', '&amp;': '&', '&lt;': '<', '&gt;': '>', '&quot;': '"',
-      '&#39;': "'", '&apos;': "'"
-  };
-  text = text.replace(/&[a-z#0-9]+;/gi, (match) => entities[match] || '');
+    // 2. Link များကို အထူးကိုင်တွယ်ခြင်း (Verification Link များအတွက် အရေးကြီးသည်)
+    // ဥပမာ: <a href="http://link.com">Click here</a> -> Click here ( http://link.com )
+    cleanHtml = cleanHtml.replace(/<a\s+[^>]*?href=(["'])(.*?)\1[^>]*>([\s\S]*?)<\/a>/gi,
+        (match, quote, url, text) => {
+            const cleanText = text.replace(/<[^>]+>/g, '').trim();
+            if (cleanText && url) {
+                // Link စာသားနှင့် URL တူနေပါက URL ကိုသာပြသခြင်း
+                if (cleanText.toLowerCase().includes(url.toLowerCase()) || url.toLowerCase().includes(cleanText.toLowerCase())) {
+                    return `\n${url}\n`;
+                }
+                return ` ${cleanText} ( ${url} ) `;
+            }
+            return url ? `\n${url}\n` : ''; // Link စာသားမရှိပါက URL ကိုသာပြသခြင်း
+        }
+    );
 
-  // 5. Clean up whitespace
-  text = text.replace(/[ \t]+/g, ' ').trim();
-  text = text.replace(/\n\s*\n/g, '\n\n');
-  text = text.replace(/\n{3,}/g, '\n\n');
+    // 3. စာကြောင်းအသစ်များအတွက် block-level tag များကို newline အဖြစ်ပြောင်းခြင်း
+    cleanHtml = cleanHtml.replace(/<br\s*\/?>/gi, '\n');
+    cleanHtml = cleanHtml.replace(/<h[1-6][^>]*>/gi, '\n**'); // ခေါင်းစဉ်များကို Bold လုပ်ရန်
+    cleanHtml = cleanHtml.replace(/<\/h[1-6]>/gi, '**\n');
+    cleanHtml = cleanHtml.replace(/<\/p>|<\/div>|<\/li>|<\/tr>|<\/blockquote>/gi, '\n');
 
-  return text.trim();
+    // 4. ကျန်ရှိသော HTML tag အားလုံးကို ဖယ်ရှားခြင်း
+    let plainText = cleanHtml.replace(/<[^>]+>/g, ' ');
+
+    // 5. HTML entities များကို သက်ဆိုင်ရာ စာလုံးများဖြင့် အစားထိုးခြင်း
+    const entities = {
+        '&nbsp;': ' ', '&amp;': '&', '&lt;': '<', '&gt;': '>', '&quot;': '"',
+        '&#39;': "'", '&apos;': "'", '&#10;': '\n', '&#13;': '\r'
+    };
+    plainText = plainText.replace(/&[a-z#0-9]+;/gi, (match) => entities[match] || '');
+
+    // 6. မလိုအပ်သော space နှင့် line အပိုများကို ရှင်းလင်းခြင်း
+    plainText = plainText
+        .replace(/[ \t]+/g, ' ')
+        .replace(/\n\s*\n/g, '\n\n')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+
+    return plainText || "အကြောင်းအရာ မတွေ့ရှိပါ";
 }
 
 
-/**
- * --- ပြင်ဆင်မှု အပိုင်း ---
- * Email ပြသရာတွင် အမှားအယွင်းဖြစ်လျှင် ရပ်တန့်မနေစေရန် try-catch block များဖြင့် ပိုမိုကောင်းမွန်အောင် ထိန်းချုပ်ထားသည်။
- */
 async function viewSingleEmail(chatId, messageId, emailAddress, emailIndex, fromPage, env) {
     await editMessage(chatId, messageId, "⏳ Email ကို ဖွင့်နေပါသည်...", null, env);
 
@@ -529,11 +521,11 @@ async function viewSingleEmail(chatId, messageId, emailAddress, emailIndex, from
 
         let cleanedBody;
         try {
-            // Email body ကို သန့်စင်ခြင်း
+            // --- ပြင်ဆင်မှု အပိုင်း ---
+            // အဆင့်မြင့် function အသစ်ဖြင့် email body ကို သန့်စင်ခြင်း
             cleanedBody = cleanEmailBody(mail.body);
         } catch (parseError) {
             console.error("Could not parse email body:", parseError);
-            // သန့်စင်ရာတွင် error တက်ပါက မူရင်းစာကို တိုက်ရိုက်ပြသခြင်း
             cleanedBody = "⚠️ [Email ၏ အကြောင်းအရာကို သန့်စင်ရာတွင် အမှားအယွင်းဖြစ်ပွားပါသည်]\n\n" + mail.body.replace(/<[^>]+>/g, '').substring(0, 2000);
         }
         
