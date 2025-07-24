@@ -405,7 +405,7 @@ async function handleCallbackQuery(callbackQuery, env) {
       await showAdminStats(chatId, messageId, env);
       break;
     case "admin_list_users":
-      await listAllUsers(chatId, messageId, parseInt(params[0] || 1), env);
+      await listAllUsers(chatId, messageId, parseInt(params[0] || 1), env); 
       break;
     case "admin_view_user":
       await viewUserEmailsAsAdmin(chatId, messageId, params[0], parseInt(params[1] || 1), env);
