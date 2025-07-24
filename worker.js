@@ -1,9 +1,9 @@
 /**
  * Cloudflare Worker for a Telegram Temporary Email Bot
  * Author: Gemini (with user-requested features)
- * Version: 2.0 (Menu System & Admin Broadcast)
+ * Version: 3.0 (Improved Email Readability & UI)
  * Language: Burmese (Comments) & English (Code)
- * Features: Interactive menu, User panel, Admin panel, Broadcast to all users, Email creation/deletion, Inbox viewer, Random address generator.
+ * Features: Interactive menu, Paginated inbox, Clear single email view, Admin panel, Broadcast, Email management.
  * Database: Cloudflare KV
  * Email Receiving: Cloudflare Email Routing
  */
@@ -23,10 +23,8 @@ export default {
     if (request.method === "POST") {
       const payload = await request.json();
       if (payload.message) {
-        // Pass ctx to handleMessage for background tasks like broadcasting
         ctx.waitUntil(handleMessage(payload.message, env));
       } else if (payload.callback_query) {
-        // Pass ctx to handleCallbackQuery as well
         ctx.waitUntil(handleCallbackQuery(payload.callback_query, env, ctx));
       }
     }
@@ -70,13 +68,13 @@ export default {
     };
 
     let { inbox, owner } = JSON.parse(emailData);
-    inbox.unshift(newEmail);
+    inbox.unshift(newEmail); // Add new email to the top
 
     await env.MAIL_BOT_DB.put(emailKey, JSON.stringify({ inbox, owner }));
 
     await sendMessage(
       owner,
-      `📬 **လိပ်စာအသစ်ရောက်ရှိ!**\n\nသင်၏လိပ်စာ \`${to}\` သို့ email အသစ်တစ်စောင် ရောက်ရှိနေပါသည်။ \n\n"📧 ကျွန်ုပ်၏ Email များ" ခလုတ်မှတစ်ဆင့် စစ်ဆေးနိုင်ပါသည်။`,
+      `📬 **Email အသစ်ရောက်ရှိ!**\n\nသင်၏လိပ်စာ \`${to}\` သို့ email အသစ်တစ်စောင် ရောက်ရှိနေပါသည်။ \n\n"📧 ကျွန်ုပ်၏ Email များ" ခလုတ်မှတစ်ဆင့် စစ်ဆေးနိုင်ပါသည်။`,
       null,
       env
     );
@@ -107,19 +105,6 @@ async function editMessage(chatId, messageId, text, reply_markup = null, env) {
     return apiRequest('editMessageText', payload, env);
 }
 
-async function sendDocument(chatId, content, filename, caption, reply_markup, env) {
-    const url = `https://api.telegram.org/bot${env.BOT_TOKEN}/sendDocument`;
-    const formData = new FormData();
-    formData.append('chat_id', chatId);
-    formData.append('document', new Blob([content], { type: 'text/plain' }), filename);
-    formData.append('caption', caption);
-    formData.append('parse_mode', 'Markdown');
-    if (reply_markup) {
-        formData.append('reply_markup', JSON.stringify(reply_markup));
-    }
-    await fetch(url, { method: 'POST', body: formData });
-}
-
 // --- State and User Management ---
 
 async function getUserData(chatId, env) {
@@ -145,50 +130,28 @@ async function handleMessage(message, env) {
     const text = message.text ? message.text.trim() : "";
     const userData = await getUserData(chatId, env);
 
-    // --- State-based actions (for multi-step processes like creating emails or broadcasting) ---
-    // User ရဲ့ လက်ရှိလုပ်ဆောင်ချက် (state) ပေါ်မူတည်ပြီး အလုပ်လုပ်ရန်
     if (userData.state) {
         switch (userData.state) {
             case 'awaiting_email_name':
                 await createNewEmail(chatId, text.toLowerCase().split(" ")[0], env);
-                // Reset state after action
                 userData.state = null;
                 await updateUserData(chatId, userData, env);
                 return;
             case 'awaiting_broadcast_message':
                 if (isAdmin(chatId, env)) {
                     await confirmBroadcast(chatId, message.message_id, text, env);
-                    userData.state = null; // Reset state
+                    userData.state = null;
                     await updateUserData(chatId, userData, env);
                 }
                 return;
         }
     }
 
-    // --- Command handling ---
-    // Command များအတွက် အဓိက ကိုင်တွယ်ရန်
     if (text.startsWith('/')) {
         switch (text.toLowerCase()) {
             case "/start":
             case "/menu":
                 await showMainMenu(chatId, env);
-                break;
-            case "/create":
-                await requestEmailName(chatId, env);
-                break;
-            case "/my_emails":
-            case "/myemails":
-                await listUserEmails(chatId, env);
-                break;
-            case "/random_address":
-                await generateRandomAddress(chatId, env);
-                break;
-            case "/admin":
-                if (isAdmin(chatId, env)) {
-                    await showAdminPanel(chatId, env);
-                } else {
-                    await sendMessage(chatId, "⛔ သင်သည် Admin မဟုတ်ပါ။", null, env);
-                }
                 break;
             default:
                 await sendMessage(chatId, "🤔 Command ကို နားမလည်ပါ။ /start ကိုနှိပ်ပြီး menu ကိုပြန်ခေါ်နိုင်ပါသည်။", null, env);
@@ -253,24 +216,30 @@ async function createNewEmail(chatId, name, env) {
     await sendMessage(chatId, `✅ **အောင်မြင်ပါသည်!**\nသင်၏ email လိပ်စာအသစ်မှာ:\n\n\`${email}\`\n\n"📧 ကျွန်ုပ်၏ Email များ" ကိုနှိပ်ပြီး စီမံခန့်ခွဲနိုင်ပါသည်။`, { inline_keyboard: [[{ text: "🔙 Menu သို့ပြန်သွားရန်", callback_data: "main_menu" }]] }, env);
 }
 
-async function listUserEmails(chatId, env) {
+async function listUserEmails(chatId, env, messageId = null) {
     const userData = await getUserData(chatId, env);
 
     if (!userData || userData.createdEmails.length === 0) {
-        await sendMessage(chatId, "텅နေပါသည်! သင်ဖန်တီးထားသော email များမရှိသေးပါ။", { inline_keyboard: [[{ text: "➕ Email အသစ်ဖန်တီးရန်", callback_data: "create_email" }]] }, env);
+        const text = "텅နေပါသည်! သင်ဖန်တီးထားသော email များမရှိသေးပါ။";
+        const keyboard = { inline_keyboard: [[{ text: "➕ Email အသစ်ဖန်တီးရန်", callback_data: "create_email" }], [{ text: "🔙 Menu သို့ပြန်သွားရန်", callback_data: "main_menu" }]] };
+        if (messageId) await editMessage(chatId, messageId, text, keyboard, env);
+        else await sendMessage(chatId, text, keyboard, env);
         return;
     }
 
     const keyboard = [];
     for (const email of userData.createdEmails) {
-        keyboard.push([
-            { text: `📥 Inbox: ${email}`, callback_data: `view_inbox:${email}` },
-            { text: "🗑️ ဖျက်ရန်", callback_data: `delete_email:${email}` },
-        ]);
+        // Now each email address is a button that leads to its inbox
+        keyboard.push([{ text: `📬 ${email}`, callback_data: `view_inbox:${email}:1` }]);
     }
     keyboard.push([{ text: "🔙 Menu သို့ပြန်သွားရန်", callback_data: "main_menu" }]);
 
-    await sendMessage(chatId, "သင်၏ Email လိပ်စာများ:", { inline_keyboard: keyboard }, env);
+    const textToSend = "သင်၏ Email လိပ်စာများအား ကြည့်ရှုရန် (သို့) စီမံရန် ရွေးချယ်ပါ:";
+    if (messageId) {
+        await editMessage(chatId, messageId, textToSend, { inline_keyboard: keyboard }, env);
+    } else {
+        await sendMessage(chatId, textToSend, { inline_keyboard: keyboard }, env);
+    }
 }
 
 async function generateRandomAddress(chatId, env, messageId = null) {
@@ -297,7 +266,6 @@ async function generateRandomAddress(chatId, env, messageId = null) {
     }
 }
 
-
 // --- Callback Query Handlers ---
 
 async function handleCallbackQuery(callbackQuery, env, ctx) {
@@ -306,15 +274,13 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
     const data = callbackQuery.data;
     const [action, ...params] = data.split(":");
 
-    // Answer the callback query first to remove the "loading" state on the button
     await apiRequest('answerCallbackQuery', { callback_query_id: callbackQuery.id }, env);
     
-    // Update user activity
     const userData = await getUserData(chatId, env);
     await updateUserData(chatId, userData, env);
 
-    // --- Main Menu Actions ---
     switch (action) {
+        // --- Main Menu & Creation ---
         case "main_menu":
             await showMainMenu(chatId, env, messageId);
             break;
@@ -322,7 +288,7 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
             await requestEmailName(chatId, env);
             break;
         case "my_emails":
-            await listUserEmails(chatId, env);
+            await listUserEmails(chatId, env, messageId);
             break;
         case "random_address":
             await generateRandomAddress(chatId, env, messageId);
@@ -335,95 +301,143 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
             await generateRandomAddress(chatId, env, messageId);
             break;
 
-        // --- Inbox/Email Actions ---
+        // --- NEW: Inbox and Email Viewing ---
         case "view_inbox":
-            await viewInbox(chatId, params[0], env);
+            // params[0] = email, params[1] = page
+            await viewInbox(chatId, messageId, params[0], parseInt(params[1] || 1), env);
             break;
-        case "refresh_inbox":
-            await viewInbox(chatId, params[0], env, messageId);
+        case "view_email":
+            // params[0] = email, params[1] = emailIndex, params[2] = page from
+            await viewSingleEmail(chatId, messageId, params[0], parseInt(params[1]), parseInt(params[2]), env);
             break;
-        case "delete_email":
+        
+        // --- Email Deletion ---
+        case "delete_email_prompt":
+             // params[0] = emailAddress
             await confirmDeleteEmail(chatId, messageId, params[0], env);
             break;
-        case "delete_confirm":
+        case "delete_email_confirm":
+            // params[0] = emailAddress
             await deleteEmail(chatId, messageId, params[0], env);
             break;
-        case "delete_cancel":
-            await editMessage(chatId, messageId, "ဖျက်ခြင်းကို ပယ်ဖျက်လိုက်ပါသည်။", { inline_keyboard: [[{ text: "📧 ကျွန်ုပ်၏ Email များ ကြည့်ရန်", callback_data: "my_emails" }]] }, env);
-            break;
 
-        // --- Admin Panel Actions ---
+        // --- Admin Panel ---
         case "admin_panel":
+        case "admin_back":
             await showAdminPanel(chatId, env, messageId);
             break;
         case "admin_stats":
             await showAdminStats(chatId, messageId, env);
             break;
-        case "admin_list_users":
-            await listAllUsers(chatId, messageId, parseInt(params[0] || 1), env);
-            break;
         case "admin_broadcast":
             await requestBroadcastMessage(chatId, messageId, env);
             break;
         case "broadcast_confirm":
-            // Pass ctx to the broadcast execution function
             await executeBroadcast(chatId, messageId, env, ctx);
             break;
         case "broadcast_cancel":
             await editMessage(chatId, messageId, "❌ Broadcast ကို ပယ်ဖျက်လိုက်ပါသည်။", { inline_keyboard: [[{ text: "⬅️ Admin Panel သို့ပြန်သွားရန်", callback_data: "admin_panel" }]] }, env);
-            // Clear the broadcast message from state
             const adminData = await getUserData(chatId, env);
             delete adminData.broadcast_message;
             await updateUserData(chatId, adminData, env);
             break;
-        case "admin_back":
-            await showAdminPanel(chatId, env, messageId);
-            break;
-        // Add other admin cases here if needed, like view_user, delete_email_as_admin, etc.
     }
 }
 
-// --- Email Management Functions ---
+// --- NEW/OVERHAULED: Email Viewing Functions ---
 
-async function viewInbox(chatId, email, env, messageId = null) {
-    const emailKey = `email:${email}`;
+async function viewInbox(chatId, messageId, emailAddress, page, env) {
+    const emailKey = `email:${emailAddress}`;
+    const emailData = await env.MAIL_BOT_DB.get(emailKey);
+    const { inbox } = emailData ? JSON.parse(emailData) : { inbox: [] };
+
+    const EMAILS_PER_PAGE = 5;
+    const totalPages = Math.ceil(inbox.length / EMAILS_PER_PAGE);
+    page = Math.max(1, Math.min(page, totalPages));
+
+    const startIndex = (page - 1) * EMAILS_PER_PAGE;
+    const endIndex = startIndex + EMAILS_PER_PAGE;
+    const pageEmails = inbox.slice(startIndex, endIndex);
+
+    let text = `📥 **Inbox for \`${emailAddress}\`**\n\n`;
+    const keyboard = [];
+
+    if (inbox.length === 0) {
+        text += "텅နေပါသည်! Email များ ရောက်ရှိမလာသေးပါ။";
+    } else {
+        text += `စာမျက်နှာ ${page}/${totalPages} | စုစုပေါင်း ${inbox.length} စောင်`;
+        pageEmails.forEach((mail, index) => {
+            const originalIndex = startIndex + index;
+            const subject = mail.subject.substring(0, 25) + (mail.subject.length > 25 ? '...' : '');
+            const from = mail.from.substring(0, 25) + (mail.from.length > 25 ? '...' : '');
+            // Pass the current page number to the callback for the back button
+            keyboard.push([{ text: `📧 ${subject}`, callback_data: `view_email:${emailAddress}:${originalIndex}:${page}` }]);
+        });
+    }
+
+    const paginationRow = [];
+    if (page > 1) {
+        paginationRow.push({ text: "◀️ ရှေ့へ", callback_data: `view_inbox:${emailAddress}:${page - 1}` });
+    }
+    if (page < totalPages) {
+        paginationRow.push({ text: "နောက်へ ▶️", callback_data: `view_inbox:${emailAddress}:${page + 1}` });
+    }
+    if (paginationRow.length > 0) {
+        keyboard.push(paginationRow);
+    }
+    
+    keyboard.push([
+        { text: "🔄 Refresh", callback_data: `view_inbox:${emailAddress}:${page}` },
+        { text: "🗑️ ဖျက်ရန်", callback_data: `delete_email_prompt:${emailAddress}` }
+    ]);
+    keyboard.push([{ text: "🔙 ကျွန်ုပ်၏ Email များသို့", callback_data: "my_emails" }]);
+    
+    await editMessage(chatId, messageId, text, { inline_keyboard: keyboard }, env);
+}
+
+async function viewSingleEmail(chatId, messageId, emailAddress, emailIndex, fromPage, env) {
+    const emailKey = `email:${emailAddress}`;
     const emailData = await env.MAIL_BOT_DB.get(emailKey);
     if (!emailData) {
-        await sendMessage(chatId, "❌ Error: Email not found.", null, env);
+        await editMessage(chatId, messageId, "❌ Error: Email not found.", null, env);
         return;
     }
     const { inbox } = JSON.parse(emailData);
-    if (inbox.length === 0) {
-        const text = `**Inbox: \`${email}\`**\n\n텅နေပါသည်! Email များ ရောက်ရှိမလာသေးပါ။`;
-        const keyboard = { inline_keyboard: [[{ text: "🔄 Refresh", callback_data: `refresh_inbox:${email}` }], [{ text: "🔙 Email List သို့ပြန်သွားရန်", callback_data: "my_emails" }]] };
-        if (messageId) {
-            await editMessage(chatId, messageId, text, keyboard, env);
-        } else {
-            await sendMessage(chatId, text, keyboard, env);
-        }
+    const mail = inbox[emailIndex];
+
+    if (!mail) {
+        await editMessage(chatId, messageId, "❌ Error: Could not retrieve this specific email.", null, env);
         return;
     }
-    let fileContent = `Inbox for: ${email}\n=========================\n\n`;
-    for (const mail of inbox) {
-        fileContent += `From: ${mail.from}\n`;
-        fileContent += `Subject: ${mail.subject}\n`;
-        fileContent += `Date: ${new Date(mail.receivedAt).toLocaleString('en-GB')}\n`;
-        fileContent += `-------------------------\n`;
-        fileContent += `${mail.body}\n\n`;
-        fileContent += `=========================\n\n`;
-    }
-    const caption = `📥 **Inbox for \`${email}\`**\n\nစုစုပေါင်း email \`${inbox.length}\` စောင်ရှိပါသည်။ အသေးစိတ်အတွက် ဖိုင်ကို download လုပ်ပါ။`;
-    const keyboard = { inline_keyboard: [[{ text: "🔄 Refresh", callback_data: `refresh_inbox:${email}` }], [{ text: "🔙 Email List သို့ပြန်သွားရန်", callback_data: "my_emails" }]] };
-    await sendDocument(chatId, fileContent, `inbox_${email}.txt`, caption, keyboard, env);
+    
+    // Truncate body to avoid hitting Telegram message limits
+    const body = mail.body.length > 3500 ? mail.body.substring(0, 3500) + "\n\n[...Message Truncated...]" : mail.body;
+
+    let text = `**From:** \`${mail.from}\`\n`;
+    text += `**Subject:** \`${mail.subject}\`\n`;
+    text += `**Received:** \`${new Date(mail.receivedAt).toLocaleString('en-GB')}\`\n`;
+    text += `\n----------------------------------------\n\n${body}`;
+
+    const keyboard = {
+        inline_keyboard: [
+            // The back button now remembers which page of the inbox you were on
+            [{ text: `🔙 Inbox (Page ${fromPage}) သို့ပြန်သွားရန်`, callback_data: `view_inbox:${emailAddress}:${fromPage}` }]
+        ]
+    };
+
+    await editMessage(chatId, messageId, text, keyboard, env);
 }
 
+
+// --- Email Deletion Functions ---
+
 async function confirmDeleteEmail(chatId, messageId, email, env) {
-    const text = `🗑️ **အတည်ပြုပါ**\n\nသင် \`${email}\` ကို အပြီးတိုင် ဖျက်လိုပါသလား? ဤလုပ်ဆောင်ချက်ကို နောက်ပြန်လှည့်၍မရပါ။`;
+    const text = `🗑️ **အတည်ပြုပါ**\n\nသင် \`${email}\` ကို အပြီးတိုင် ဖျက်လိုပါသလား? ဤလုပ်ဆောင်ချက်ကို နောက်ပြန်လှည့်၍မရပါ။ Inbox ထဲမှ စာများအားလုံးပါ ဖျက်ပစ်ပါမည်။`;
     const keyboard = {
         inline_keyboard: [
             [
-                { text: "✅ ဟုတ်ကဲ့၊ ဖျက်မည်", callback_data: `delete_confirm:${email}` },
-                { text: "❌ မဟုတ်ပါ", callback_data: "delete_cancel" },
+                { text: "✅ ဟုတ်ကဲ့၊ ဖျက်မည်", callback_data: `delete_email_confirm:${email}` },
+                { text: "❌ မဟုတ်ပါ", callback_data: `view_inbox:${email}:1` }, // Go back to inbox
             ],
         ],
     };
@@ -438,7 +452,7 @@ async function deleteEmail(chatId, messageId, email, env) {
         await updateUserData(chatId, userData, env);
     }
     await env.MAIL_BOT_DB.delete(emailKey);
-    await editMessage(chatId, messageId, `✅ **အောင်မြင်စွာဖျက်ပြီးပါပြီ။**\nလိပ်စာ \`${email}\` ကို ဖျက်လိုက်ပါပြီ။`, { inline_keyboard: [[{ text: "🔙 Email List သို့ပြန်သွားရန်", callback_data: "my_emails" }]] }, env);
+    await editMessage(chatId, messageId, `✅ **အောင်မြင်စွာဖျက်ပြီးပါပြီ။**\nလိပ်စာ \`${email}\` ကို ဖျက်လိုက်ပါပြီ။`, { inline_keyboard: [[{ text: "🔙 ကျွန်ုပ်၏ Email များသို့", callback_data: "my_emails" }]] }, env);
 }
 
 
@@ -450,7 +464,6 @@ async function showAdminPanel(chatId, env, messageId = null) {
         inline_keyboard: [
             [{ text: "📢 အားလုံးသို့စာပို့ရန် (Broadcast)", callback_data: "admin_broadcast" }],
             [{ text: "📊 Bot Stats", callback_data: "admin_stats" }],
-            [{ text: "👥 Users List", callback_data: "admin_list_users:1" }],
             [{ text: "🔙 Main Menu သို့ပြန်သွားရန်", callback_data: "main_menu" }],
         ],
     };
@@ -469,17 +482,6 @@ async function showAdminStats(chatId, messageId, env) {
     await editMessage(chatId, messageId, text, keyboard, env);
 }
 
-async function listAllUsers(chatId, messageId, page, env) {
-    // This function is long and can be kept as is from the original script if needed.
-    // For brevity, I'll just put a placeholder implementation.
-    const allUserKeys = (await env.MAIL_BOT_DB.list({ prefix: "user:" })).keys;
-    const text = `👥 **Users List**\n\nစုစုပေါင်း User \`${allUserKeys.length}\` ယောက်ရှိပါသည်။ (အသေးစိတ်ကြည့်ရှုရန် feature ကို ထပ်မံထည့်သွင်းနိုင်ပါသည်။)`;
-    const keyboard = { inline_keyboard: [[{ text: "⬅️ Admin Panel သို့ပြန်သွားရန်", callback_data: "admin_panel" }]] };
-    await editMessage(chatId, messageId, text, keyboard, env);
-}
-
-// --- NEW: Broadcast Functions ---
-
 async function requestBroadcastMessage(chatId, messageId, env) {
     const adminData = await getUserData(chatId, env);
     adminData.state = 'awaiting_broadcast_message';
@@ -490,7 +492,6 @@ async function requestBroadcastMessage(chatId, messageId, env) {
 }
 
 async function confirmBroadcast(chatId, messageId, messageText, env) {
-    // Store the message to be broadcasted in the admin's user data
     const adminData = await getUserData(chatId, env);
     adminData.broadcast_message = messageText;
     await updateUserData(chatId, adminData, env);
@@ -518,13 +519,9 @@ async function executeBroadcast(chatId, messageId, env, ctx) {
 
     await editMessage(chatId, messageId, "⏳ Broadcast ကို စတင်ပို့ဆောင်နေပါပြီ... ပြီးဆုံးပါက အကြောင်းကြားပါမည်။", null, env);
     
-    // Clear the broadcast message from state immediately
     delete adminData.broadcast_message;
     await updateUserData(chatId, adminData, env);
 
-    // Use ctx.waitUntil to perform the broadcast in the background
-    // This allows the function to return a response to Telegram quickly
-    // while the long-running task continues.
     ctx.waitUntil((async () => {
         const allUserKeys = (await env.MAIL_BOT_DB.list({ prefix: "user:" })).keys;
         let sentCount = 0;
@@ -535,10 +532,7 @@ async function executeBroadcast(chatId, messageId, env, ctx) {
             try {
                 await sendMessage(targetUserId, messageText, null, env);
                 sentCount++;
-                // To avoid hitting API rate limits, add a small delay.
-                // Cloudflare workers might not guarantee exact timing with await.
-                // For a large number of users, a Queue is a better solution.
-                await new Promise(resolve => setTimeout(resolve, 100)); // 100ms delay
+                await new Promise(resolve => setTimeout(resolve, 100));
             } catch (e) {
                 console.error(`Failed to send broadcast to ${targetUserId}: ${e}`);
                 failedCount++;
