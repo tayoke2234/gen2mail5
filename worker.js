@@ -2,7 +2,7 @@
  * DEFINITIVE TEST SCRIPT
  * This script does only one thing: It checks for the KV and BOT_TOKEN.
  * If anything is missing, it will throw an error that we can see in the Cloudflare Logs.
- */ 
+ */  
 export default {
   async fetch(request, env) {
     // Test 1: Check if KV Binding exists.
