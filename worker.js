@@ -1,9 +1,9 @@
 /**
  * Cloudflare Worker for a Telegram Temporary Email Bot
  * Author: Gemini (with user-requested features)
- * Version: 5.5 (Smart Link Formatting)
+ * Version: 6.0 (The Stability Release)
  * Language: Burmese (Comments) & English (Code)
- * Features: Interactive menu, Paginated inbox, User stats, Email forwarding setup, Admin panel, Broadcast, Email management, User management for admins, Persistent command menu.
+ * Features: Timeout protection, Fallback mechanism, Optimized parser, Interactive menu, Paginated inbox, User stats, Email forwarding setup, Admin panel, Broadcast, Email management, User management for admins, Persistent command menu.
  * Database: Cloudflare KV
  * Email Receiving: Cloudflare Email Routing
  * External Service: SendGrid (for forwarding)
@@ -106,13 +106,13 @@ async function apiRequest(method, payload, env) {
 }
 
 async function sendMessage(chatId, text, reply_markup = null, env, parse_mode = "Markdown") {
-    const payload = { chat_id: chatId, text, parse_mode };
+    const payload = { chat_id: chatId, text, parse_mode, disable_web_page_preview: true };
     if (reply_markup) payload.reply_markup = reply_markup;
     return apiRequest('sendMessage', payload, env);
 }
 
 async function editMessage(chatId, messageId, text, reply_markup = null, env, parse_mode = "Markdown") {
-    const payload = { chat_id: chatId, message_id: messageId, text, parse_mode };
+    const payload = { chat_id: chatId, message_id: messageId, text, parse_mode, disable_web_page_preview: true };
     if (reply_markup) payload.reply_markup = reply_markup;
     return apiRequest('editMessageText', payload, env);
 }
@@ -442,83 +442,56 @@ async function viewInbox(chatId, messageId, emailAddress, page, env) {
 }
 
 /**
- * --- ပြင်ဆင်မှု အပိုင်း ---
+ * --- ပြင်ဆင်မှု အပိုင်း v6.0 ---
  * HTML ကို သန့်စင်ပြီး Telegram ၏ HTML format အတွက် ပြင်ဆင်ပေးသော Function အသစ်။
- * ဤ function သည် link များကို <a href="...">...</a> ပုံစံဖြင့် ထိန်းသိမ်းပေးသည်။
+ * ဤ function သည် ပိုမိုမြန်ဆန်ပြီး ရပ်တန့်သွားခြင်းမရှိအောင် အာရုံစိုက်ထားသည်။
  */
-function cleanEmailForTelegramHTML(html) {
-    if (!html) return "Empty Body";
+function simpleHTMLtoTelegramHTML(html) {
+    if (!html) return "";
 
-    // Helper function to escape HTML special characters
     const escapeHTML = (str) => str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
-    // 1. အသုံးမဝင်သော tag များကို အကြောင်းအရာနှင့်တကွ ဖယ်ရှားခြင်း
-    let cleanHtml = html
-        .replace(/<head[^>]*>[\s\S]*?<\/head>/gi, '')
-        .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
-        .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '');
+    let text = html;
+    // Remove scripts, styles, and head
+    text = text.replace(/<(script|style|head)\b[^>]*>[\s\S]*?<\/\1>/gi, "");
 
-    // 2. အသုံးများသော formatting tags များကို Telegram HTML tags အဖြစ် ပြောင်းလဲခြင်း
-    cleanHtml = cleanHtml.replace(/<strong\b[^>]*>/gi, '<b>').replace(/<\/strong>/gi, '</b>');
-    cleanHtml = cleanHtml.replace(/<em\b[^>]*>/gi, '<i>').replace(/<\/em>/gi, '</i>');
-    cleanHtml = cleanHtml.replace(/<u\b[^>]*>/gi, '<u>').replace(/<\/u>/gi, '</u>');
-    cleanHtml = cleanHtml.replace(/<code\b[^>]*>/gi, '<code>').replace(/<\/code>/gi, '</code>');
-    cleanHtml = cleanHtml.replace(/<pre\b[^>]*>/gi, '<pre>').replace(/<\/pre>/gi, '</pre>');
+    // Block-level tags to newlines
+    text = text.replace(/<(p|div|h[1-6]|blockquote|pre|li|tr|hr)\b[^>]*>/gi, "\n");
     
-    // 3. စာကြောင်းအသစ်များအတွက် block-level tag များကို newline အဖြစ်ပြောင်းခြင်း
-    cleanHtml = cleanHtml.replace(/<br\s*\/?>/gi, '\n');
-    cleanHtml = cleanHtml.replace(/<h[1-6][^>]*>/gi, '\n<b>');
-    cleanHtml = cleanHtml.replace(/<\/h[1-6]>/gi, '</b>\n');
-    cleanHtml = cleanHtml.replace(/<p[^>]*>/gi, '\n').replace(/<\/p>/gi, '\n');
-    cleanHtml = cleanHtml.replace(/<div[^>]*>/gi, '\n').replace(/<\/div>/gi, '\n');
-    cleanHtml = cleanHtml.replace(/<li[^>]*>/gi, '\n• ').replace(/<\/li>/gi, ''); // List items
-    cleanHtml = cleanHtml.replace(/<tr[^>]*>/gi, '\n').replace(/<\/tr>/gi, '');
-    cleanHtml = cleanHtml.replace(/<td[^>]*>/gi, ' | ').replace(/<\/td>/gi, ''); // Table cells
+    // Replace <br> with newline
+    text = text.replace(/<br\s*\/?>/gi, "\n");
 
-    // 4. Link များကို <a href="..."> ပုံစံအတိုင်း ထိန်းသိမ်းထားရန် ယာယီ placeholder ဖြင့်မှတ်သားထားခြင်း
-    const links = [];
-    cleanHtml = cleanHtml.replace(/<a\s+[^>]*?href=(["'])(.*?)\1[^>]*>([\s\S]*?)<\/a>/gi, (match, quote, url, text) => {
-        const placeholder = `__LINK_${links.length}__`;
-        links.push({ placeholder, url: escapeHTML(url), text: text });
-        return placeholder;
+    // Handle links
+    text = text.replace(/<a\s+[^>]*?href=(["'])(.*?)\1[^>]*>([\s\S]*?)<\/a>/gi, (match, quote, url, linkText) => {
+        const cleanedText = linkText.replace(/<[^>]+>/g, " ").trim();
+        return `<a href="${escapeHTML(url)}">${escapeHTML(cleanedText || url)}</a>`;
     });
 
-    // 5. ကျန်ရှိသော HTML tag အားလုံးကို ဖယ်ရှားခြင်း
-    let plainText = cleanHtml.replace(/<[^>]+>/g, ' ');
+    // Basic formatting
+    text = text.replace(/<(b|strong)\b[^>]*>/gi, "<b>").replace(/<\/(b|strong)>/gi, "</b>");
+    text = text.replace(/<(i|em)\b[^>]*>/gi, "<i>").replace(/<\/(i|em)>/gi, "</i>");
+    text = text.replace(/<(u)\b[^>]*>/gi, "<u>").replace(/<\/(u)>/gi, "</u>");
+    text = text.replace(/<(code|pre)\b[^>]*>/gi, "<code>").replace(/<\/(code|pre)>/gi, "</code>");
 
-    // 6. HTML entities များကို သက်ဆိုင်ရာ စာလုံးများဖြင့် အစားထိုးခြင်း
-    const entities = {
-        '&nbsp;': ' ', '&amp;': '&', '&lt;': '<', '&gt;': '>', '&quot;': '"',
-        '&#39;': "'", '&apos;': "'"
-    };
-    plainText = plainText.replace(/&[a-z#0-9]+;/gi, (m) => entities[m] || '');
+    // Strip all remaining tags
+    text = text.replace(/<[^>]+>/g, "");
 
-    // 7. မလိုအပ်သော space နှင့် line အပိုများကို ရှင်းလင်းခြင်း
-    plainText = plainText
-        .replace(/[ \t]+/g, ' ')
-        .replace(/\n\s*\n/g, '\n\n')
-        .replace(/\n{3,}/g, '\n\n')
-        .trim();
+    // Decode entities
+    const entities = { '&nbsp;': ' ', '&amp;': '&', '&lt;': '<', '&gt;': '>', '&quot;': '"', '&#39;': "'", '&apos;': "'" };
+    text = text.replace(/&[a-z#0-9]+;/gi, (m) => entities[m] || '');
 
-    // 8. မှတ်သားထားသော link placeholder များကို Telegram HTML link format ဖြင့် ပြန်လည်အစားထိုးခြင်း
-    links.forEach(link => {
-        // Link ထဲမှာပါတဲ့ HTML tag တွေကို ထပ်မံရှင်းလင်းခြင်း
-        let linkText = link.text.replace(/<[^>]+>/g, ' ').trim();
-        if (!linkText) {
-            linkText = link.url.length > 50 ? link.url.substring(0, 50) + '...' : link.url;
-        }
-        // စာသားများကို HTML error မဖြစ်အောင် escape လုပ်ခြင်း
-        const escapedText = escapeHTML(plainText);
-        // Placeholder ကို HTML link ဖြင့် အစားထိုးခြင်း
-        plainText = escapedText.replace(escapeHTML(link.placeholder), `<a href="${link.url}">${escapeHTML(linkText)}</a>`);
-    });
+    // Cleanup whitespace
+    text = text.replace(/[ \t]+/g, ' ').replace(/\n\s*\n/g, '\n\n').replace(/\n{3,}/g, '\n\n').trim();
 
-    return plainText || "အကြောင်းအရာ မတွေ့ရှိပါ";
+    return text;
 }
 
-
+/**
+ * --- ပြင်ဆင်မှု အပိုင်း v6.0 ---
+ * Email ပြသခြင်းကို Timeout နှင့် Fallback Mechanism များဖြင့် အလုံးစုံမွမ်းမံထားသည်။
+ */
 async function viewSingleEmail(chatId, messageId, emailAddress, emailIndex, fromPage, env) {
-    await editMessage(chatId, messageId, "⏳ Email ကို ဖွင့်နေပါသည်...", null, env, "HTML");
+    await editMessage(chatId, messageId, "⏳ Email ကို ဖွင့်နေပါသည်...", null, env);
 
     try {
         const emailKey = `email:${emailAddress}`;
@@ -537,46 +510,59 @@ async function viewSingleEmail(chatId, messageId, emailAddress, emailIndex, from
             return;
         }
 
+        // --- Timeout Protection ---
+        const parsingPromise = new Promise(resolve => resolve(simpleHTMLtoTelegramHTML(mail.body)));
+        const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Parsing Timeout")), 5000)); // 5 seconds timeout
+
         let cleanedBody;
         try {
-            // --- ပြင်ဆင်မှု အပိုင်း ---
-            // HTML format အတွက် အထူးပြင်ဆင်ထားသော function အသစ်ဖြင့် email body ကို သန့်စင်ခြင်း
-            cleanedBody = cleanEmailForTelegramHTML(mail.body);
-        } catch (parseError) {
-            console.error("Could not parse email body:", parseError);
-            cleanedBody = "⚠️ [Email ၏ အကြောင်းအရာကို သန့်စင်ရာတွင် အမှားအယွင်းဖြစ်ပွားပါသည်]\n\n" + mail.body.replace(/<[^>]+>/g, '').substring(0, 2000);
+            cleanedBody = await Promise.race([parsingPromise, timeoutPromise]);
+        } catch (e) {
+            console.error(e.message); // "Parsing Timeout"
+            cleanedBody = "⚠️ Email ကို သန့်စင်ရာတွင် အချိန်ကြာမြင့်နေပါသည်... ရိုးရှင်းသောပုံစံဖြင့် ပြသပါမည်။\n\n" +
+                          mail.body.replace(/<[^>]+>/g, " ").replace(/\s+/g, ' ').substring(0, 2000);
         }
-        
+
         const body = cleanedBody.length > 4000 ? cleanedBody.substring(0, 4000) + "\n\n[...Message Truncated...]" : cleanedBody;
         
-        // --- ပြင်ဆင်မှု အပိုင်း ---
-        // စာသားများကို Markdown အစား HTML format ဖြင့် ပြင်ဆင်ခြင်း
-        let text = `<b>From:</b> <code>${mail.from.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</code>\n`;
-        text += `<b>Subject:</b> ${mail.subject.replace(/</g, '&lt;').replace(/>/g, '&gt;')}\n`;
-        text += `<b>Received:</b> <code>${new Date(mail.receivedAt).toLocaleString('en-GB')}</code>\n`;
-        text += `\n----------------------------------------\n\n${body}`;
-
+        const header = `<b>From:</b> <code>${mail.from.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</code>\n` +
+                     `<b>Subject:</b> ${mail.subject.replace(/</g, '&lt;').replace(/>/g, '&gt;')}\n` +
+                     `<b>Received:</b> <code>${new Date(mail.receivedAt).toLocaleString('en-GB')}</code>\n` +
+                     `\n----------------------------------------\n\n`;
+        
+        const fullMessageHTML = header + body;
+        
         const keyboard = {
             inline_keyboard: [
                 [{ text: `🔙 Inbox (Page ${fromPage}) သို့ပြန်သွားရန်`, callback_data: `view_inbox:${encode(emailAddress)}:${fromPage}` }]
             ]
         };
         
+        // --- Fallback Mechanism ---
         try {
-            // --- ပြင်ဆင်မှု အပိုင်း ---
-            // parse_mode ကို "HTML" အဖြစ် သတ်မှတ်ပြီး message ကို ပို့ခြင်း
-            await editMessage(chatId, messageId, text, keyboard, env, "HTML");
+            // 1. HTML format ဖြင့် အရင်ကြိုးစားကြည့်ခြင်း
+            await editMessage(chatId, messageId, fullMessageHTML, keyboard, env, "HTML");
         } catch (telegramError) {
-             console.error("Telegram API error on sending cleaned email:", telegramError);
-             const fallbackText = `<b>From:</b> <code>${mail.from.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</code>\n` +
-                                `<b>Subject:</b> ${mail.subject.replace(/</g, '&lt;').replace(/>/g, '&gt;')}\n\n` +
-                                `⚠️ <b>Error:</b> Telegram တွင် စာသားများပြသရန် အခက်အခဲရှိနေပါသည်။`;
-             await editMessage(chatId, messageId, fallbackText, keyboard, env, "HTML");
+             console.error("Telegram API error with HTML, falling back to Markdown:", telegramError);
+             try {
+                // 2. HTML ဖြင့်မရပါက ရိုးရှင်းသော Markdown format ဖြင့် ထပ်ကြိုးစားခြင်း
+                const fallbackBody = mail.body.replace(/<[^>]+>/g, " ").replace(/\s+/g, ' ').substring(0, 3000);
+                const fallbackMessage = `**From:** \`${mail.from}\`\n` +
+                                      `**Subject:** \`${mail.subject}\`\n\n` +
+                                      `⚠️ _HTML format ဖြင့်ပြသရန် အခက်အခဲရှိနေပါသဖြင့် ရိုးရှင်းသောစာသားဖြင့် ပြသပါသည်_\n\n` +
+                                      fallbackBody;
+                await editMessage(chatId, messageId, fallbackMessage, keyboard, env, "Markdown");
+             } catch (finalError) {
+                // 3. လုံးဝမရတော့ပါက error message သီးသန့်ပြသခြင်း
+                console.error("Final fallback failed:", finalError);
+                const finalErrorMessage = "❌ **Fatal Error**\nဤ email ၏ အကြောင်းအရာကို ပြသနိုင်ခြင်းမရှိပါ။";
+                await editMessage(chatId, messageId, finalErrorMessage, keyboard, env, "Markdown");
+             }
         }
 
     } catch (error) {
-        console.error("Error in viewSingleEmail:", error);
-        await editMessage(chatId, messageId, "❌ <b>System Error</b>\nEmail ကိုပြသရာတွင် အမှားအယွင်းတစ်ခု ဖြစ်ပွားခဲ့ပါသည်။", { inline_keyboard: [[{ text: `🔙 Inbox သို့ပြန်သွားရန်`, callback_data: `view_inbox:${encode(emailAddress)}:${fromPage}` }]] }, env, "HTML");
+        console.error("Critical Error in viewSingleEmail:", error);
+        await editMessage(chatId, messageId, "❌ **System Error**\nEmail ကိုပြသရာတွင် အမှားအယွင်းတစ်ခု ဖြစ်ပွားခဲ့ပါသည်။", { inline_keyboard: [[{ text: `🔙 Inbox သို့ပြန်သွားရန်`, callback_data: `view_inbox:${encode(emailAddress)}:${fromPage}` }]] }, env, "Markdown");
     }
 }
 
@@ -683,7 +669,7 @@ async function forwardEmailWithThirdParty(forwardTo, emailContent, env) {
         console.error("SendGrid API Key or From Email not configured. Skipping forward.");
         return;
     }
-    const cleanedBodyForForwarding = cleanEmailForTelegramHTML(emailContent.body);
+    const cleanedBodyForForwarding = simpleHTMLtoTelegramHTML(emailContent.body);
     const forwardBody = `<p>--- This is an automated forward from your Temp Mail Bot ---</p><p><b>Original Sender:</b> ${emailContent.from}</p><p><b>Original Subject:</b> ${emailContent.subject}</p><hr><div>${cleanedBodyForForwarding}</div>`;
     const sendGridPayload = {
         personalizations: [{ to: [{ email: forwardTo }] }],
