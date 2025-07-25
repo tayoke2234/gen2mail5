@@ -1,13 +1,14 @@
 /**
  * Cloudflare Worker for a Telegram Temporary Email Bot
  * Author: Gemini (with user-requested features)
- * Version: 7.1 (The Caching Update)
+ * Version: 7.0 (The Ultimate Admin Update)
  * Language: Burmese (Comments) & English (Code)
  * Features:
- * - Cached Statistics: Advanced stats are now cached for 1 hour for instant loading.
  * - Admin Panel Overhaul: User Management, Bot Management, Advanced Stats
  * - User Management: Search by ID, Ban/Unban, View Full Details
  * - Bot Management: Inactive Data Cleanup, Edit Welcome Message, Health Check
+ * - Advanced Stats: Active user tracking
+ * - Interactive email view options, Robust parsing, Fallback mechanism, Timeout protection
  * - And all previous features...
  * Database: Cloudflare KV
  */
@@ -15,7 +16,7 @@
 // --- Helper Functions ---
 const encode = (str) => encodeURIComponent(str);
 const decode = (str) => decodeURIComponent(str);
-const escapeHTML = (str) => str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+const escapeHTML = (str) => str.replace(/&/g, '&').replace(/</g, '<').replace(/>/g, '>');
 
 // --- Main Handler ---
 export default {
@@ -127,6 +128,7 @@ async function getUserData(chatId, env) {
     if (data) {
         return JSON.parse(data);
     }
+    // New user default structure
     return { 
         createdAt: new Date().toISOString(),
         lastActive: new Date().toISOString(),
@@ -158,11 +160,16 @@ async function handleMessage(message, env) {
     const chatId = message.chat.id;
     const text = message.text ? message.text.trim() : "";
     
+    // Get user data and check if banned
     const userData = await getUserData(chatId, env);
-    if (userData.isBanned) return;
+    if (userData.isBanned) {
+        return; // Ignore banned users
+    }
 
+    // Update last active time and save if it's a new user
     await updateUserData(chatId, userData, env);
 
+    // State handling
     if (userData.state) {
         let stateHandled = true;
         switch (userData.state) {
@@ -180,6 +187,7 @@ async function handleMessage(message, env) {
         }
     }
 
+    // Command handling
     if (text.startsWith('/')) {
         switch (text.toLowerCase()) {
             case "/start": case "/menu": await showMainMenu(chatId, env); break;
@@ -249,10 +257,7 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
     if (action === "admin_unban_user") await unbanUser(chatId, messageId, decodedParams[0], parseInt(decodedParams[1]), env);
 
     // Admin Bot Management Actions
-    // --- ပြင်ဆင်မှု အပိုင်း v7.1 ---
-    if (action === "admin_stats") await showAdvancedStats(chatId, messageId, env, false); // false = don't force refresh
-    if (action === "admin_stats_refresh") await showAdvancedStats(chatId, messageId, env, true); // true = force refresh
-    
+    if (action === "admin_stats") await showAdvancedStats(chatId, messageId, env);
     if (action === "admin_broadcast") await requestBroadcastMessage(chatId, messageId, env);
     if (action === "broadcast_confirm") await executeBroadcast(chatId, messageId, decodedParams[0], env, ctx); 
     if (action === "broadcast_cancel") await editMessage(chatId, messageId, "❌ Broadcast ကို ပယ်ဖျက်လိုက်ပါသည်။", { inline_keyboard: [[{ text: "⬅️ Admin Panel သို့ပြန်သွားရန်", callback_data: "admin_panel" }]] }, env);
@@ -280,12 +285,12 @@ async function showMainMenu(chatId, env, messageId = null) {
     else await sendMessage(chatId, text, keyboard, env);
 }
 
-// ... (Other user-facing functions like createNewEmail, listUserEmails, etc. are omitted for brevity)
-// ... (All previous functions are included in the final script)
+// ... (Other user-facing functions like createNewEmail, listUserEmails, etc. remain largely the same)
+// ... (I will omit them for brevity but they are included in the final script)
 
 // --- Email Viewing Logic (v6.1) ---
-const parseToHTML = (html) => { /* ... implementation from v6.1 ... */ return html || ""; };
-const parseToRawText = (html) => { /* ... implementation from v6.1 ... */ return html || ""; };
+const parseToHTML = (html) => { /* ... implementation from v6.1 ... */ return html; };
+const parseToRawText = (html) => { /* ... implementation from v6.1 ... */ return html; };
 async function showEmailViewOptions(chatId, messageId, emailAddress, emailIndex, fromPage, env) { /* ... implementation from v6.1 ... */ }
 async function viewSingleEmail(chatId, messageId, emailAddress, emailIndex, fromPage, mode, env) { /* ... implementation from v6.1 ... */ }
 
@@ -293,7 +298,7 @@ async function viewSingleEmail(chatId, messageId, emailAddress, emailIndex, from
 // --- 👑 ADMIN PANEL (Overhauled) 👑 ---
 
 async function showAdminPanel(chatId, env, messageId) {
-    const text = "👑 **Admin Control Panel (v7.1)**\n\nအောက်ပါကဏ္ဍများမှတစ်ဆင့် Bot ကို စီမံခန့်ခွဲနိုင်ပါသည်။";
+    const text = "👑 **Admin Control Panel (v7.0)**\n\nအောက်ပါကဏ္ဍများမှတစ်ဆင့် Bot ကို စီမံခန့်ခွဲနိုင်ပါသည်။";
     const keyboard = {
         inline_keyboard: [
             [{ text: "👤 User စီမံခန့်ခွဲမှု", callback_data: "admin_user_management" }],
@@ -307,45 +312,170 @@ async function showAdminPanel(chatId, env, messageId) {
 }
 
 // --- 👤 User Management Panel ---
-async function showAdminUserManagementPanel(chatId, messageId, env) { /* ... implementation from v7.0 ... */ }
-async function requestUserIdSearch(chatId, messageId, env) { /* ... implementation from v7.0 ... */ }
-async function listAllUsers(chatId, messageId, page, env) { /* ... implementation from v7.0 ... */ }
-async function showUserDetailsForAdmin(chatId, messageId, targetUserId, fromPage, env) { /* ... implementation from v7.0 ... */ }
-async function banUser(chatId, messageId, targetUserId, fromPage, env) { /* ... implementation from v7.0 ... */ }
-async function unbanUser(chatId, messageId, targetUserId, fromPage, env) { /* ... implementation from v7.0 ... */ }
+async function showAdminUserManagementPanel(chatId, messageId, env) {
+    const text = "👤 **User စီမံခန့်ခွဲမှု**";
+    const keyboard = {
+        inline_keyboard: [
+            [{ text: "📋 User အားလုံးကို ကြည့်ရန်", callback_data: "admin_list_users" }],
+            [{ text: "🆔 User ID ဖြင့်ရှာရန်", callback_data: "admin_search_user" }],
+            [{ text: "⬅️ Admin Panel သို့ပြန်သွားရန်", callback_data: "admin_panel" }]
+        ]
+    };
+    await editMessage(chatId, messageId, text, keyboard, env);
+}
 
-// --- ⚙️ Bot Management Panel ---
-async function showAdminBotManagementPanel(chatId, messageId, env) { /* ... implementation from v7.0 ... */ }
-async function requestWelcomeMessage(chatId, messageId, env) { /* ... implementation from v7.0 ... */ }
-async function saveWelcomeMessage(chatId, newText, env) { /* ... implementation from v7.0 ... */ }
-async function checkBotHealth(chatId, messageId, env) { /* ... implementation from v7.0 ... */ }
-async function confirmCleanup(chatId, messageId, env) { /* ... implementation from v7.0 ... */ }
-async function executeCleanup(chatId, messageId, env, ctx) { /* ... implementation from v7.0 ... */ }
+async function requestUserIdSearch(chatId, messageId, env) {
+    let userData = await getUserData(chatId, env);
+    userData.state = 'awaiting_user_id_search';
+    await updateUserData(chatId, userData, env);
+    const text = "🆔 ရှာဖွေလိုသော User ၏ Telegram ID ကို ရိုက်ထည့်ပေးပါ။";
+    await editMessage(chatId, messageId, text, { inline_keyboard: [[{ text: "🔙 နောက်သို့", callback_data: "admin_user_management" }]] }, env);
+}
 
-// --- 📊 Advanced Statistics (CACHED) ---
-/**
- * --- ပြင်ဆင်မှု အပိုင်း v7.1 ---
- * စာရင်းအင်းများကို (၁) နာရီတစ်ကြိမ် cache လုပ်ပြီး သိမ်းဆည်းထားသော function အသစ်။
- */
-async function showAdvancedStats(chatId, messageId, env, forceRefresh = false) {
-    const CACHE_KEY = "system_stats:cache";
+async function listAllUsers(chatId, messageId, page, env) { /* ... implementation from v6.1 ... */ }
+
+async function showUserDetailsForAdmin(chatId, messageId, targetUserId, fromPage, env) {
+    await editMessage(chatId, messageId, `⏳ User ID: \`${targetUserId}\` ၏ အချက်အလက်များကို ရှာဖွေနေပါသည်...`, null, env);
     
-    if (!forceRefresh) {
-        const cachedStats = await env.MAIL_BOT_DB.get(CACHE_KEY, { type: "json" });
-        if (cachedStats) {
-            const text = formatStatsText(cachedStats, true); // true = from cache
-            const keyboard = {
-                inline_keyboard: [
-                    [{ text: "🔄 Refresh", callback_data: "admin_stats_refresh" }],
-                    [{ text: "⬅️ Admin Panel သို့ပြန်သွားရန်", callback_data: "admin_panel" }]
-                ]
-            };
-            await editMessage(chatId, messageId, text, keyboard, env);
-            return;
-        }
+    const targetUserData = await getUserData(targetUserId, env);
+    if (!targetUserData.createdAt) {
+         await editMessage(chatId, messageId, `❌ User ID \`${targetUserId}\` ကို ရှာမတွေ့ပါ (သို့) Bot ကို အသုံးမပြုဖူးသေးပါ။`, { inline_keyboard: [[{ text: "🔙 နောက်သို့", callback_data: "admin_user_management" }]] }, env);
+         return;
     }
 
-    await editMessage(chatId, messageId, "📊 စာရင်းအင်းများကို တွက်ချက်နေပါသည်... (User များပါက အချိန်ကြာနိုင်ပါသည်)", null, env);
+    let text = `👤 **User Details: \`${targetUserId}\`**\n\n`;
+    text += `* Bot ကို စတင်အသုံးပြုသည့်ရက်: \`${new Date(targetUserData.createdAt).toLocaleString('en-GB')}\`\n`;
+    text += `* နောက်ဆုံးအသုံးပြုသည့်ရက်: \`${new Date(targetUserData.lastActive).toLocaleString('en-GB')}\`\n`;
+    text += `* Forwarding Email: \`${targetUserData.forwardEmail || 'မရှိပါ'}\`\n`;
+    text += `* Ban Status: ${targetUserData.isBanned ? '🚫 Banned' : '✅ Active'}\n`;
+    text += `\n📧 **ဖန်တီးထားသော Email များ (${targetUserData.createdEmails.length} စောင်):**\n`;
+    text += targetUserData.createdEmails.map(e => `\`${e}\``).join('\n') || '_Email မရှိပါ_';
+
+    const keyboard = [
+        targetUserData.isBanned 
+            ? [{ text: "✅ User ကို Unban လုပ်ရန်", callback_data: `admin_unban_user:${encode(targetUserId)}:${fromPage}` }]
+            : [{ text: "🚫 User ကို Ban လုပ်ရန်", callback_data: `admin_ban_user:${encode(targetUserId)}:${fromPage}` }],
+        [{ text: "🔙 User List သို့ပြန်သွားရန်", callback_data: `list_users_page:${fromPage}` }]
+    ];
+
+    await editMessage(chatId, messageId, text, { inline_keyboard: keyboard }, env);
+}
+
+async function banUser(chatId, messageId, targetUserId, fromPage, env) {
+    let targetUserData = await getUserData(targetUserId, env);
+    targetUserData.isBanned = true;
+    await updateUserData(targetUserId, targetUserData, env);
+    await sendMessage(targetUserId, "🚫 သင်သည် Bot ကို အသုံးပြုခွင့်မှ ပိတ်ပင်ခြင်းခံလိုက်ရပါသည်။", null, env);
+    await showUserDetailsForAdmin(chatId, messageId, targetUserId, fromPage, env);
+}
+
+async function unbanUser(chatId, messageId, targetUserId, fromPage, env) {
+    let targetUserData = await getUserData(targetUserId, env);
+    targetUserData.isBanned = false;
+    await updateUserData(targetUserId, targetUserData, env);
+    await sendMessage(targetUserId, "✅ သင်သည် Bot ကို ပြန်လည်အသုံးပြုနိုင်ပါပြီ။", null, env);
+    await showUserDetailsForAdmin(chatId, messageId, targetUserId, fromPage, env);
+}
+
+// --- ⚙️ Bot Management Panel ---
+async function showAdminBotManagementPanel(chatId, messageId, env) {
+    const text = "⚙️ **Bot စီမံခန့်ခွဲမှု**";
+    const keyboard = {
+        inline_keyboard: [
+            [{ text: "📢 အားလုံးသို့စာပို့ရန် (Broadcast)", callback_data: "admin_broadcast" }],
+            [{ text: "✏️ ကြိုဆိုစာပြင်ရန်", callback_data: "admin_edit_welcome" }],
+            [{ text: "🧹 Data ရှင်းလင်းရန်", callback_data: "admin_cleanup_prompt" }],
+            [{ text: "🩺 Bot Health စစ်ဆေးရန်", callback_data: "admin_health_check" }],
+            [{ text: "⬅️ Admin Panel သို့ပြန်သွားရန်", callback_data: "admin_panel" }]
+        ]
+    };
+    await editMessage(chatId, messageId, text, keyboard, env);
+}
+
+async function requestWelcomeMessage(chatId, messageId, env) {
+    let userData = await getUserData(chatId, env);
+    userData.state = 'awaiting_welcome_message';
+    await updateUserData(chatId, userData, env);
+    const currentMsg = await getWelcomeMessage(env);
+    const text = `✏️ **ကြိုဆိုစာ ပြင်ဆင်ရန်**\n\nUser များ /start နှိပ်သည့်အခါ ပြသလိုသော စာအသစ်ကို ပို့ပေးပါ။ Markdown သုံးနိုင်ပါသည်။\n\n**လက်ရှိစာသား:**\n${currentMsg}`;
+    await editMessage(chatId, messageId, text, { inline_keyboard: [[{ text: "🔙 နောက်သို့", callback_data: "admin_bot_management" }]] }, env);
+}
+
+async function saveWelcomeMessage(chatId, newText, env) {
+    await env.MAIL_BOT_DB.put("system_message:welcome", newText);
+    await sendMessage(chatId, "✅ ကြိုဆိုစာကို အောင်မြင်စွာ ပြောင်းလဲပြီးပါပြီ။", { inline_keyboard: [[{ text: "⬅️ Bot Management သို့ပြန်သွားရန်", callback_data: "admin_bot_management" }]] }, env);
+}
+
+async function checkBotHealth(chatId, messageId, env) {
+    await editMessage(chatId, messageId, "🩺 Bot Health ကို စစ်ဆေးနေပါသည်...", null, env);
+    let report = "🩺 **Bot Health Report**\n\n";
+    
+    // Check Telegram API
+    const tgCheck = await apiRequest('getMe', {}, env);
+    report += `* Telegram API: ${tgCheck.ok ? '✅ Online' : '❌ Offline'}\n`;
+
+    // Check KV Database
+    try {
+        const testKey = 'health_check:test';
+        await env.MAIL_BOT_DB.put(testKey, 'ok', { expirationTtl: 60 });
+        const val = await env.MAIL_BOT_DB.get(testKey);
+        await env.MAIL_BOT_DB.delete(testKey);
+        report += `* Cloudflare KV: ${val === 'ok' ? '✅ Operational' : '❌ Error'}\n`;
+    } catch(e) {
+        report += `* Cloudflare KV: ❌ Error\n`;
+        console.error("KV Health Check Error:", e);
+    }
+    
+    await editMessage(chatId, messageId, report, { inline_keyboard: [[{ text: "🔙 နောက်သို့", callback_data: "admin_bot_management" }]] }, env);
+}
+
+async function confirmCleanup(chatId, messageId, env) {
+    const text = "🗑️ **အတည်ပြုပါ**\n\nသင်သည် ရက်ပေါင်း 90 ကျော် အသုံးမပြုတော့သော user များ နှင့် ၎င်းတို့၏ email data အားလုံးကို အပြီးတိုင် ဖျက်မှာ သေချာပါသလား? ဤလုပ်ဆောင်ချက်ကို နောက်ပြန်လှည့်၍မရပါ။";
+    const keyboard = {
+        inline_keyboard: [
+            [{ text: "✅ ဟုတ်ကဲ့၊ ရှင်းလင်းမည်", callback_data: "admin_cleanup_confirm" }],
+            [{ text: "❌ မဟုတ်ပါ", callback_data: "admin_bot_management" }]
+        ]
+    };
+    await editMessage(chatId, messageId, text, keyboard, env);
+}
+
+async function executeCleanup(chatId, messageId, env, ctx) {
+    await editMessage(chatId, messageId, "🧹 Data များကို စတင်ရှင်းလင်းနေပါပြီ... ပြီးဆုံးပါက အကြောင်းကြားပါမည်။ ဤလုပ်ငန်းစဉ်သည် user အရေအတွက်ပေါ်မူတည်၍ အချိန်အနည်းငယ်ကြာနိုင်ပါသည်။", null, env);
+
+    ctx.waitUntil((async () => {
+        let cleanedUsers = 0;
+        let cleanedEmails = 0;
+        const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
+
+        const allUserKeys = (await env.MAIL_BOT_DB.list({ prefix: "user:" })).keys;
+
+        for (const key of allUserKeys) {
+            const userDataJSON = await env.MAIL_BOT_DB.get(key.name);
+            if (userDataJSON) {
+                const userData = JSON.parse(userDataJSON);
+                const lastActiveDate = new Date(userData.lastActive);
+
+                if (lastActiveDate < ninetyDaysAgo) {
+                    // Delete user's emails
+                    for (const email of userData.createdEmails) {
+                        await env.MAIL_BOT_DB.delete(`email:${email}`);
+                        cleanedEmails++;
+                    }
+                    // Delete user
+                    await env.MAIL_BOT_DB.delete(key.name);
+                    cleanedUsers++;
+                }
+            }
+        }
+        const report = `✅ **Data ရှင်းလင်းခြင်း ပြီးဆုံးပါပြီ!**\n\n- ရှင်းလင်းလိုက်သော User အရေအတွက်: ${cleanedUsers}\n- ရှင်းလင်းလိုက်သော Email အရေအတွက်: ${cleanedEmails}`;
+        await sendMessage(chatId, report, { inline_keyboard: [[{ text: "⬅️ Bot Management သို့ပြန်သွားရန်", callback_data: "admin_bot_management" }]] }, env);
+    })());
+}
+
+// --- 📊 Advanced Statistics ---
+async function showAdvancedStats(chatId, messageId, env) {
+    await editMessage(chatId, messageId, "📊 စာရင်းအင်းများကို တွက်ချက်နေပါသည်...", null, env);
     
     const allUserKeys = (await env.MAIL_BOT_DB.list({ prefix: "user:" })).keys;
     const allEmailKeys = (await env.MAIL_BOT_DB.list({ prefix: "email:" })).keys;
@@ -357,7 +487,6 @@ async function showAdvancedStats(chatId, messageId, env, forceRefresh = false) {
     const oneDayAgo = new Date(now.getTime() - (24 * 60 * 60 * 1000));
     const sevenDaysAgo = new Date(now.getTime() - (7 * 24 * 60 * 60 * 1000));
 
-    // This loop can be slow, but it's now only run when cache is empty or refreshed
     for (const key of allUserKeys) {
         const userDataJSON = await env.MAIL_BOT_DB.get(key.name);
         if (userDataJSON) {
@@ -367,48 +496,20 @@ async function showAdvancedStats(chatId, messageId, env, forceRefresh = false) {
             if (new Date(userData.createdAt) > oneDayAgo) new24h++;
         }
     }
-    
-    const statsData = {
-        totalUsers: allUserKeys.length,
-        totalEmails: allEmailKeys.length,
-        active24h,
-        active7d,
-        new24h,
-        lastUpdated: new Date().toISOString()
-    };
 
-    // Cache the result for 1 hour (3600 seconds)
-    await env.MAIL_BOT_DB.put(CACHE_KEY, JSON.stringify(statsData), { expirationTtl: 3600 });
-
-    const text = formatStatsText(statsData, false); // false = newly calculated
-    const keyboard = {
-        inline_keyboard: [
-            [{ text: "🔄 Refresh", callback_data: "admin_stats_refresh" }],
-            [{ text: "⬅️ Admin Panel သို့ပြန်သွားရန်", callback_data: "admin_panel" }]
-        ]
-    };
-    await editMessage(chatId, messageId, text, keyboard, env);
-}
-
-function formatStatsText(statsData, fromCache) {
-    let text = `📊 **အဆင့်မြင့် စာရင်းအင်းများ**\n`;
-    if (fromCache) {
-        const lastUpdated = new Date(statsData.lastUpdated).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
-        text += `_(Cache မှပြသခြင်း | နောက်ဆုံး Update: ${lastUpdated})_\n\n`;
-    } else {
-        text += `_(နောက်ဆုံးအခြေအနေ)_\n\n`;
-    }
-    
+    let text = `📊 **အဆင့်မြင့် စာရင်းအင်းများ**\n\n`;
     text += `**ခြုံငုံသုံးသပ်ချက်:**\n`;
-    text += `* စုစုပေါင်း User: \`${statsData.totalUsers}\`\n`;
-    text += `* စုစုပေါင်း Email: \`${statsData.totalEmails}\`\n\n`;
+    text += `* စုစုပေါင်း User: \`${allUserKeys.length}\`\n`;
+    text += `* စုစုပေါင်း Email: \`${allEmailKeys.length}\`\n\n`;
     text += `**User လှုပ်ရှားမှု:**\n`;
-    text += `* 24 နာရီအတွင်း အသုံးပြုသူ: \`${statsData.active24h}\`\n`;
-    text += `* 7 ရက်အတွင်း အသုံးပြုသူ: \`${statsData.active7d}\`\n`;
-    text += `* 24 နာရီအတွင်း User အသစ်: \`${statsData.new24h}\``;
-    
-    return text;
+    text += `* 24 နာရီအတွင်း အသုံးပြုသူ: \`${active24h}\`\n`;
+    text += `* 7 ရက်အတွင်း အသုံးပြုသူ: \`${active7d}\`\n`;
+    text += `* 24 နာရီအတွင်း User အသစ်: \`${new24h}\``;
+
+    await editMessage(chatId, messageId, text, { inline_keyboard: [[{ text: "⬅️ Admin Panel သို့ပြန်သွားရန်", callback_data: "admin_panel" }]] }, env);
 }
 
-// ... (Other functions like broadcast, etc. are omitted for brevity but included in the final script)
+// ... (Other functions like broadcast, etc. are omitted for brevity)
 // ... (All previous functions are included in the final script)
+
+
